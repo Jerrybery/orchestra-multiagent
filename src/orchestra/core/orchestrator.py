@@ -284,8 +284,11 @@ class Orchestrator:
             # Success — even if no structured output, exit 0 means it completed
             await self.task_queue.transition(task.id, TaskStatus.IMPLEMENTED)
             notes = parsed.get("notes", "") if parsed else "no structured output"
-            await self._emit("fr_done", {"task_id": task.id, "notes": notes})
-            log.info("FR completed %s (structured=%s)", task.id, parsed is not None)
+
+            # Push feature branch to remote for visibility / PR
+            pushed = await self.worktree.push_branch(task.id)
+            await self._emit("fr_done", {"task_id": task.id, "notes": notes, "pushed": pushed})
+            log.info("FR completed %s (structured=%s, pushed=%s)", task.id, parsed is not None, pushed)
         else:
             reason = f"Exit code {result.exit_code}"
             if parsed:
