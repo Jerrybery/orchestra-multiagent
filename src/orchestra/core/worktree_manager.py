@@ -65,6 +65,24 @@ class WorktreeManager:
         log.info("Created worktree %s on branch %s", wt_path, branch)
         return wt_path
 
+    async def push_branch(self, task_id: str) -> bool:
+        """Push a feature branch to the remote."""
+        branch = self._branch_name(task_id)
+
+        # Check if remote exists
+        rc, _, _ = await self._run("git", "remote", "get-url", "origin")
+        if rc != 0:
+            log.info("No remote 'origin' — skipping push for %s", branch)
+            return False
+
+        rc, out, err = await self._run("git", "push", "-u", "origin", branch)
+        if rc != 0:
+            log.warning("Push failed for %s: %s", branch, err)
+            return False
+
+        log.info("Pushed %s to origin", branch)
+        return True
+
     async def merge_to_main(self, task_id: str) -> bool:
         """Merge a feature branch back into main."""
         branch = self._branch_name(task_id)
@@ -96,10 +114,13 @@ class WorktreeManager:
             if rc != 0:
                 log.warning("Failed to remove worktree %s: %s", wt_path, err)
 
-        # Delete the branch
+        # Delete local branch
         rc, _, err = await self._run("git", "branch", "-d", branch)
         if rc != 0:
             log.warning("Failed to delete branch %s: %s", branch, err)
+
+        # Delete remote branch (if it was pushed)
+        await self._run("git", "push", "origin", "--delete", branch)
 
         log.info("Cleaned up worktree and branch for %s", task_id)
 
