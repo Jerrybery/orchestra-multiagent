@@ -341,6 +341,8 @@ class Orchestrator:
         merged, msg = await self.worktree.merge_to_main(task_id)
         if merged:
             await self.worktree.cleanup_worktree(task_id)
+            # Push merged main to remote
+            await self.worktree.push_main()
 
         # Mark DONE regardless — feature is implemented and approved.
         # If merge failed, branch stays for manual conflict resolution,
