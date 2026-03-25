@@ -22,6 +22,19 @@ STATIC_DIR = Path(__file__).parent / "static"
 app = FastAPI(title="Orchestra Dashboard")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+class NoCacheMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/static"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
+
+app.add_middleware(NoCacheMiddleware)
+
 # Will be set by the launcher (or lazily via /api/init)
 _orchestrator: Optional[Orchestrator] = None
 _orchestrator_task: Optional[asyncio.Task] = None  # the run_loop task

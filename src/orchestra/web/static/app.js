@@ -1002,13 +1002,18 @@ function startDashboard() {
 // ── Startup: check if already initialized ───────────────────────
 
 (async function boot() {
-  const res = await fetch('/api/status');
-  const data = await res.json();
-  if (data.initialized) {
-    showDashboard(data.project_path);
-  } else {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    if (data.initialized) {
+      showDashboard(data.project_path);
+    } else {
+      document.getElementById('setup-screen').classList.remove('hidden');
+      setupBrowse('~');
+    }
+  } catch (e) {
+    // Fallback: show setup screen on any error
+    console.error('Boot error:', e);
     document.getElementById('setup-screen').classList.remove('hidden');
-    // Auto-browse home directory
-    setupBrowse('~');
   }
 })();
