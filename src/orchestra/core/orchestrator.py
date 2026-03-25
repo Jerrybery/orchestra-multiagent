@@ -338,19 +338,25 @@ class Orchestrator:
         """Human accepts a task: merge to main and mark DONE."""
         await self.task_queue.transition(task_id, TaskStatus.ACCEPTED)
 
-        merged = await self.worktree.merge_to_main(task_id)
+        merged, msg = await self.worktree.merge_to_main(task_id)
         if merged:
             await self.worktree.cleanup_worktree(task_id)
-            await self.task_queue.transition(task_id, TaskStatus.DONE)
-            await self._emit("task_done", {"task_id": task_id})
 
-            # Promote any tasks that were blocked on this one
-            promoted = await self.task_queue.promote_ready_tasks()
-            if promoted:
-                await self._emit("tasks_promoted", {"task_ids": [t.id for t in promoted]})
+        # Mark DONE regardless — feature is implemented and approved.
+        # If merge failed, branch stays for manual conflict resolution,
+        # but pipeline continues (downstream tasks unblocked).
+        await self.task_queue.transition(task_id, TaskStatus.DONE)
+
+        if merged:
+            await self._emit("task_done", {"task_id": task_id, "merge": msg})
         else:
-            log.error("Merge failed for %s — task stays ACCEPTED, needs manual resolution", task_id)
-            await self._emit("merge_failed", {"task_id": task_id})
+            log.warning("Merge conflict for %s: %s — branch kept for manual resolution", task_id, msg)
+            await self._emit("task_done", {"task_id": task_id, "merge_conflict": True, "reason": msg})
+
+        # Promote any tasks that were blocked on this one
+        promoted = await self.task_queue.promote_ready_tasks()
+        if promoted:
+            await self._emit("tasks_promoted", {"task_ids": [t.id for t in promoted]})
 
     async def reject_task(self, task_id: str, reason: str) -> None:
         """Human rejects a task: send back to ASSIGNED with feedback."""
