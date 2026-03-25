@@ -789,6 +789,16 @@ async function showAgentDetail(agentId) {
   if (viewer) viewer.scrollTop = viewer.scrollHeight;
 }
 
+// ── Switch project ──────────────────────────────────────────────
+
+document.getElementById('btn-switch').addEventListener('click', async () => {
+  if (!confirm('Disconnect from current project and switch?')) return;
+  await fetch('/api/disconnect', { method: 'POST' });
+  document.getElementById('dashboard').classList.add('hidden');
+  document.getElementById('setup-screen').classList.remove('hidden');
+  setupBrowse('~');
+});
+
 // ── Submit modal ────────────────────────────────────────────────
 
 document.getElementById('btn-submit').addEventListener('click', () => {
