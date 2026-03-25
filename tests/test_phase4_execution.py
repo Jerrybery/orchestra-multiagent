@@ -105,8 +105,8 @@ class TestWorktreeLifecycle:
         subprocess.run(["git", "-C", str(wt), "commit", "-m", "Add feature"], capture_output=True, check=True)
 
         # Merge
-        result = await worktree_mgr.merge_to_main("feat-001")
-        assert result is True
+        success, msg = await worktree_mgr.merge_to_main("feat-001")
+        assert success is True
 
         # The file should now exist in the main repo
         assert (worktree_mgr.repo_dir / "feature.txt").is_file()

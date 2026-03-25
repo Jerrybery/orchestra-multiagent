@@ -83,9 +83,14 @@ class WorktreeManager:
         log.info("Pushed %s to origin", branch)
         return True
 
-    async def merge_to_main(self, task_id: str) -> bool:
-        """Merge a feature branch back into main."""
+    async def merge_to_main(self, task_id: str) -> tuple[bool, str]:
+        """Merge a feature branch back into main.
+
+        Returns (success, message). On conflict, attempts rebase in the worktree
+        first, then retries the merge.
+        """
         branch = self._branch_name(task_id)
+        wt_path = self.worktrees_dir / task_id
 
         # Get the main branch name
         rc, main_branch, _ = await self._run(
@@ -94,15 +99,39 @@ class WorktreeManager:
         if rc != 0:
             main_branch = "main"
 
-        # Merge
+        # Try merge
         rc, out, err = await self._run("git", "merge", branch, "--no-ff",
                                        "-m", f"Merge {branch}: completed")
-        if rc != 0:
-            log.error("Merge failed for %s: %s", branch, err)
-            return False
+        if rc == 0:
+            log.info("Merged %s into %s", branch, main_branch)
+            return True, "merged"
 
-        log.info("Merged %s into %s", branch, main_branch)
-        return True
+        # Merge conflict — abort it
+        log.warning("Merge conflict for %s, attempting rebase", branch)
+        await self._run("git", "merge", "--abort")
+
+        # Try rebasing the feature branch onto main inside the worktree
+        if wt_path.exists():
+            rc_rb, _, err_rb = await self._run(
+                "git", "rebase", main_branch,
+                cwd=wt_path,
+            )
+            if rc_rb == 0:
+                # Rebase succeeded — retry merge
+                rc2, _, err2 = await self._run("git", "merge", branch, "--no-ff",
+                                               "-m", f"Merge {branch}: completed (rebased)")
+                if rc2 == 0:
+                    log.info("Merged %s into %s after rebase", branch, main_branch)
+                    return True, "merged after rebase"
+                else:
+                    log.error("Merge still failed after rebase for %s: %s", branch, err2)
+                    await self._run("git", "merge", "--abort")
+            else:
+                # Rebase also failed — abort it
+                log.error("Rebase failed for %s: %s", branch, err_rb)
+                await self._run("git", "rebase", "--abort", cwd=wt_path)
+
+        return False, f"merge conflict: {err[:200]}"
 
     async def cleanup_worktree(self, task_id: str) -> None:
         """Remove worktree and delete the feature branch."""
