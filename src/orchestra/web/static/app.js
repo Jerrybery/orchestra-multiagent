@@ -789,6 +789,21 @@ async function showAgentDetail(agentId) {
   if (viewer) viewer.scrollTop = viewer.scrollHeight;
 }
 
+// ── Auto-accept toggle ──────────────────────────────────────────
+
+document.getElementById('btn-auto-accept').addEventListener('click', async () => {
+  const res = await fetch('/api/auto-accept', { method: 'POST' });
+  const data = await res.json();
+  updateAutoAcceptBtn(data.auto_accept);
+});
+
+function updateAutoAcceptBtn(enabled) {
+  const btn = document.getElementById('btn-auto-accept');
+  btn.textContent = `Auto-Accept: ${enabled ? 'ON' : 'OFF'}`;
+  btn.style.borderColor = enabled ? '#238636' : '';
+  btn.style.color = enabled ? '#3fb950' : '';
+}
+
 // ── Switch project ──────────────────────────────────────────────
 
 document.getElementById('btn-switch').addEventListener('click', async () => {
@@ -1017,6 +1032,7 @@ function startDashboard() {
     const data = await res.json();
     if (data.initialized) {
       showDashboard(data.project_path);
+      if (data.auto_accept) updateAutoAcceptBtn(true);
     } else {
       document.getElementById('setup-screen').classList.remove('hidden');
       setupBrowse('~');

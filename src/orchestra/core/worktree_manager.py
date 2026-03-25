@@ -192,24 +192,15 @@ class WorktreeManager:
         return False, f"merge conflict: {err[:200]}"
 
     async def cleanup_worktree(self, task_id: str) -> None:
-        """Remove worktree and delete the feature branch."""
+        """Remove local worktree. Keep branches (local + remote) for history."""
         wt_path = self.worktrees_dir / task_id
-        branch = self._branch_name(task_id)
 
         if wt_path.exists():
             rc, _, err = await self._run("git", "worktree", "remove", str(wt_path), "--force")
             if rc != 0:
                 log.warning("Failed to remove worktree %s: %s", wt_path, err)
 
-        # Delete local branch
-        rc, _, err = await self._run("git", "branch", "-d", branch)
-        if rc != 0:
-            log.warning("Failed to delete branch %s: %s", branch, err)
-
-        # Delete remote branch (if it was pushed)
-        await self._run("git", "push", "origin", "--delete", branch)
-
-        log.info("Cleaned up worktree and branch for %s", task_id)
+        log.info("Cleaned up worktree for %s (branches preserved)", task_id)
 
     async def list_worktrees(self) -> list[dict[str, str]]:
         rc, out, _ = await self._run("git", "worktree", "list", "--porcelain")
