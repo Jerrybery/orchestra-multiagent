@@ -35,7 +35,7 @@ async def _create_implemented_task(orchestrator, task_id="feat-001"):
 class TestAcceptTask:
 
     @pytest.mark.asyncio
-    async def test_accept_merges_to_main(self, orchestrator):
+    async def test_accept_creates_pr_and_marks_done(self, orchestrator):
         wt = await _create_implemented_task(orchestrator)
 
         tq = orchestrator.task_queue
@@ -47,8 +47,12 @@ class TestAcceptTask:
         task = await tq.get_task("feat-001")
         assert task.status == TaskStatus.DONE
 
-        # File should be in main repo
-        assert (orchestrator.config.project_dir / "impl.py").is_file()
+        # Branch should still exist (not cleaned up — PR handles merge)
+        branches = subprocess.run(
+            ["git", "-C", str(orchestrator.config.project_dir), "branch"],
+            capture_output=True, text=True
+        )
+        assert "feat/feat-001" in branches.stdout
 
     @pytest.mark.asyncio
     async def test_accept_promotes_blocked_tasks(self, orchestrator):
