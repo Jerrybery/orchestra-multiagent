@@ -123,6 +123,24 @@ async def browse_directory(path: str = "~"):
     }
 
 
+@app.post("/api/disconnect")
+async def disconnect_project():
+    """Disconnect from the current project and return to setup screen."""
+    global _orchestrator, _orchestrator_task
+
+    if _orchestrator:
+        _orchestrator.stop()
+        await _orchestrator.close()
+
+    if _orchestrator_task and not _orchestrator_task.done():
+        _orchestrator_task.cancel()
+
+    _orchestrator = None
+    _orchestrator_task = None
+
+    return {"status": "disconnected"}
+
+
 @app.post("/api/init")
 async def init_project(req: InitRequest):
     """Initialize orchestra on a project directory (called from the web setup screen)."""
