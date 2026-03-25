@@ -65,13 +65,15 @@ class WorktreeManager:
         log.info("Created worktree %s on branch %s", wt_path, branch)
         return wt_path
 
+    async def _has_remote(self) -> bool:
+        rc, _, _ = await self._run("git", "remote", "get-url", "origin")
+        return rc == 0
+
     async def push_branch(self, task_id: str) -> bool:
         """Push a feature branch to the remote."""
         branch = self._branch_name(task_id)
 
-        # Check if remote exists
-        rc, _, _ = await self._run("git", "remote", "get-url", "origin")
-        if rc != 0:
+        if not await self._has_remote():
             log.info("No remote 'origin' — skipping push for %s", branch)
             return False
 
@@ -81,6 +83,23 @@ class WorktreeManager:
             return False
 
         log.info("Pushed %s to origin", branch)
+        return True
+
+    async def push_main(self) -> bool:
+        """Push the main branch to remote after merge."""
+        if not await self._has_remote():
+            return False
+
+        rc, main_branch, _ = await self._run("git", "symbolic-ref", "--short", "HEAD")
+        if rc != 0:
+            main_branch = "main"
+
+        rc, out, err = await self._run("git", "push", "origin", main_branch)
+        if rc != 0:
+            log.warning("Push main failed: %s", err)
+            return False
+
+        log.info("Pushed %s to origin", main_branch)
         return True
 
     async def merge_to_main(self, task_id: str) -> tuple[bool, str]:
