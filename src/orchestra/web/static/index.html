@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orchestra Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ── Setup Screen (shown when no project is connected) ── -->
+<div id="setup-screen" class="setup-screen hidden">
+  <div class="setup-card">
+    <h1>Orchestra</h1>
+    <p class="setup-subtitle">Multi-Agent Coworking System</p>
+
+    <div class="setup-section">
+      <label>Project Directory</label>
+      <div class="path-input-row">
+        <input type="text" id="setup-path" placeholder="~/code/my-project" value="~">
+        <button class="btn" onclick="setupBrowse(document.getElementById('setup-path').value)">Browse</button>
+      </div>
+    </div>
+
+    <div id="setup-browser" class="dir-browser"></div>
+
+    <div id="setup-info" class="setup-info hidden"></div>
+
+    <button id="btn-setup-init" class="btn btn-primary btn-lg" onclick="setupInit()">
+      Initialize Orchestra
+    </button>
+  </div>
+</div>
+
+<!-- ── Dashboard (shown when project is connected) ── -->
+<div id="dashboard" class="hidden">
+
+<header>
+  <div class="header-left">
+    <h1>Orchestra</h1>
+    <span class="subtitle" id="project-label">Multi-Agent Coworking</span>
+  </div>
+  <div class="header-right">
+    <div id="agent-status" class="agent-bar"></div>
+    <button id="btn-submit" class="btn btn-primary">+ Submit Requirement</button>
+  </div>
+</header>
+
+<main>
+  <section id="graph-panel" class="panel">
+    <div class="panel-header">
+      <span>Feature Graph</span>
+      <div class="legend">
+        <span class="dot dot-proposal"></span>Proposed
+        <span class="dot dot-idea"></span>Idea
+        <span class="dot dot-assigned"></span>Assigned
+        <span class="dot dot-in_progress"></span>In Progress
+        <span class="dot dot-implemented"></span>Implemented
+        <span class="dot dot-testing"></span>Testing
+        <span class="dot dot-review"></span>Review
+        <span class="dot dot-done"></span>Done
+      </div>
+    </div>
+    <div id="graph-container">
+      <svg id="dag-svg"></svg>
+    </div>
+  </section>
+
+  <section id="detail-panel" class="panel">
+    <div class="panel-header">
+      <span id="detail-title">Select a node</span>
+      <div>
+        <button id="btn-show-agents" class="btn" style="font-size:11px;padding:3px 8px">Agents</button>
+        <button id="btn-close-detail" class="btn-icon" title="Close">&times;</button>
+      </div>
+    </div>
+    <div id="detail-content">
+      <div class="empty-state">Click a node in the graph to view details</div>
+    </div>
+  </section>
+</main>
+
+<div id="modal-overlay" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>Submit Requirement</h2>
+    <textarea id="input-requirement" rows="6" placeholder="Describe what you want to build..."></textarea>
+    <div class="modal-actions">
+      <button id="btn-cancel" class="btn">Cancel</button>
+      <button id="btn-do-submit" class="btn btn-primary">Submit to Head Leader</button>
+    </div>
+  </div>
+</div>
+
+<footer id="event-log">
+  <div class="log-tabs">
+    <button class="log-tab active" data-tab="events">Events</button>
+    <button class="log-tab" data-tab="agents">Agent Logs</button>
+  </div>
+  <div id="tab-events" class="log-tab-content active">
+    <div id="log-entries"></div>
+  </div>
+  <div id="tab-agents" class="log-tab-content">
+    <div id="agent-log-entries"></div>
+  </div>
+</footer>
+
+</div><!-- /dashboard -->
+
+<script src="/static/app.js"></script>
+</body>
+</html>
