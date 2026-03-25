@@ -43,6 +43,7 @@ class OrchestraConfig:
     claude_cmd: str = "claude"
     max_turns: int = 50
     model: Optional[str] = None
+    auto_accept: bool = False  # pass_whatever mode: auto-accept after FI
 
 
 class Orchestrator:
@@ -324,13 +325,19 @@ class Orchestrator:
 
         parsed = _parse_agent_result(result.stdout)
 
-        # Move to REVIEW regardless of output — human decides
+        # Move to REVIEW
         await self.task_queue.transition(task.id, TaskStatus.REVIEW)
+        recommendation = parsed.get("recommendation", "unknown") if parsed else "unknown"
         await self._emit("fi_done", {
             "task_id": task.id,
-            "recommendation": parsed.get("recommendation", "unknown") if parsed else "unknown",
+            "recommendation": recommendation,
             "report": str(self.context.get_report_path(task.id)),
         })
+
+        # Auto-accept if pass_whatever mode is on
+        if self.config.auto_accept:
+            log.info("Auto-accepting %s (pass_whatever mode)", task.id)
+            await self.accept_task(task.id)
 
     # ── Human Review Actions ────────────────────────────────────────
 

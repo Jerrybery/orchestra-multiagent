@@ -84,6 +84,7 @@ async def get_init_status():
         return {
             "initialized": True,
             "project_path": str(_orchestrator.config.project_dir),
+            "auto_accept": _orchestrator.config.auto_accept,
         }
     return {"initialized": False, "project_path": None}
 
@@ -121,6 +122,16 @@ async def browse_directory(path: str = "~"):
         "parent": str(target.parent),
         "entries": entries,
     }
+
+
+@app.post("/api/auto-accept")
+async def toggle_auto_accept():
+    """Toggle pass_whatever mode."""
+    orch = _orch()
+    orch.config.auto_accept = not orch.config.auto_accept
+    state = orch.config.auto_accept
+    await orch._emit("auto_accept_toggled", {"enabled": state})
+    return {"auto_accept": state}
 
 
 @app.post("/api/disconnect")
