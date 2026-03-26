@@ -16,6 +16,7 @@ class WorktreeManager:
     def __init__(self, repo_dir: Path, worktrees_dir: Path):
         self.repo_dir = repo_dir
         self.worktrees_dir = worktrees_dir
+        self._branch_cache: dict[str, str] = {}
 
     async def _run(self, *cmd: str, cwd: Path | None = None) -> tuple[int, str, str]:
         proc = await asyncio.create_subprocess_exec(
@@ -41,12 +42,24 @@ class WorktreeManager:
             await self._run("git", "commit", "-m", "Initial commit")
             log.info("Initialized git repo at %s", self.repo_dir)
 
-    def _branch_name(self, task_id: str) -> str:
+    def _branch_name(self, task_id: str, title: str = "") -> str:
+        """Generate branch name from task title, e.g. feat/001-keeper-app-scaffold."""
+        if title:
+            import re
+            # Slugify: lowercase, replace non-alphanum with hyphens, trim
+            slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:50]
+            num = task_id.replace("feat-", "")
+            return f"feat/{num}-{slug}"
         return f"feat/{task_id}"
 
-    async def create_worktree(self, task_id: str) -> Path:
+    def get_branch_name(self, task_id: str) -> str:
+        """Get the branch name for a task (from cache or fallback)."""
+        return self._branch_cache.get(task_id, f"feat/{task_id}")
+
+    async def create_worktree(self, task_id: str, title: str = "") -> Path:
         """Create a new worktree + branch for a feature task."""
-        branch = self._branch_name(task_id)
+        branch = self._branch_name(task_id, title)
+        self._branch_cache[task_id] = branch
         wt_path = self.worktrees_dir / task_id
 
         if wt_path.exists():
@@ -71,7 +84,7 @@ class WorktreeManager:
 
     async def push_branch(self, task_id: str) -> bool:
         """Push a feature branch to the remote."""
-        branch = self._branch_name(task_id)
+        branch = self.get_branch_name(task_id)
 
         if not await self._has_remote():
             log.info("No remote 'origin' — skipping push for %s", branch)
@@ -87,7 +100,7 @@ class WorktreeManager:
 
     async def create_pr(self, task_id: str, title: str, body: str) -> tuple[bool, str]:
         """Create a pull request for a feature branch. Returns (success, pr_url)."""
-        branch = self._branch_name(task_id)
+        branch = self.get_branch_name(task_id)
 
         if not await self._has_remote():
             return False, "no remote"
@@ -147,7 +160,7 @@ class WorktreeManager:
         Returns (success, message). On conflict, attempts rebase in the worktree
         first, then retries the merge.
         """
-        branch = self._branch_name(task_id)
+        branch = self.get_branch_name(task_id)
         wt_path = self.worktrees_dir / task_id
 
         # Get the main branch name

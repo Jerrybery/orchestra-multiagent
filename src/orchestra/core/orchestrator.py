@@ -244,13 +244,14 @@ class Orchestrator:
     async def _run_fr(self, task: Task) -> None:
         """Run a Feature Realizer for a single task."""
         # Create worktree
-        wt_path = await self.worktree.create_worktree(task.id)
+        wt_path = await self.worktree.create_worktree(task.id, title=task.title)
+        branch = self.worktree.get_branch_name(task.id)
 
         # Transition to IN_PROGRESS
         await self.task_queue.transition(
             task.id, TaskStatus.IN_PROGRESS,
             worktree_path=str(wt_path),
-            branch=f"feat/{task.id}",
+            branch=branch,
         )
         await self._emit("fr_start", {"task_id": task.id, "title": task.title})
 
