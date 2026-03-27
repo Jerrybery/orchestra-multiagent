@@ -13,6 +13,7 @@ from typing import Optional, Callable, Awaitable
 from .task_queue import TaskQueue, TaskStatus, Task
 from .context_manager import ContextManager
 from .worktree_manager import WorktreeManager
+from .github_manager import GitHubManager
 from .agent_spawner import AgentSpawner, AgentRole, AgentHandle, AgentResult
 
 log = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ class Orchestrator:
         self.task_queue = TaskQueue(config.orchestra_dir / "tasks.db")
         self.context = ContextManager(config.orchestra_dir)
         self.worktree = WorktreeManager(config.project_dir, config.orchestra_dir / "worktrees")
+        self.github = GitHubManager(config.project_dir)
         self.spawner = AgentSpawner(
             claude_cmd=config.claude_cmd,
             max_turns=config.max_turns,
@@ -151,7 +153,18 @@ class Orchestrator:
         unique = f"{requirement}:{_time.time()}"
         req_id = "req-" + hashlib.sha256(unique.encode()).hexdigest()[:8]
         await self.task_queue.add_requirement(req_id, requirement)
-        await self._emit("hl_start", {"requirement_id": req_id, "requirement": requirement[:200]})
+
+        # Create GitHub idea issue
+        idea_issue = await self.github.create_idea_issue(
+            title=requirement[:80],
+            body=f"## Idea\n\n{requirement}\n\n---\n*Created by Orchestra*",
+        )
+        idea_issue_num = idea_issue["number"] if idea_issue else 0
+        await self._emit("hl_start", {
+            "requirement_id": req_id,
+            "requirement": requirement[:200],
+            "issue": idea_issue_num,
+        })
 
         system_prompt = self._load_prompt(AgentRole.HEAD_LEADER)
         handle = await self.spawner.spawn(
@@ -175,12 +188,18 @@ class Orchestrator:
         # Store as a proposal awaiting human review — NOT directly as tasks
         proposal_id = f"prop-{req_id.split('-')[1]}"
         summary = parsed.get("summary", requirement[:40])
+
+        # Attach idea issue number to each feature for later linking
+        for feat in parsed["features"]:
+            feat["_idea_issue"] = idea_issue_num
+
         await self.task_queue.add_proposal(proposal_id, req_id, parsed["features"], summary=summary)
 
         await self._emit("hl_done", {
             "proposal_id": proposal_id,
             "count": len(parsed["features"]),
             "features": [f["id"] for f in parsed["features"]],
+            "issue": idea_issue_num,
         })
         return proposal_id
 
@@ -196,25 +215,31 @@ class Orchestrator:
             features = [f for f in features if f["id"] in approved_feature_ids]
 
         tasks = []
+        idea_issue_num = features[0].get("_idea_issue", 0) if features else 0
+
         for feat in features:
-            # Ensure spec file exists — if HL didn't write one, generate from proposal data
+            # Ensure spec file exists
             spec_path = self.context.get_spec_path(feat["id"])
             if not spec_path.exists():
                 spec_text = feat.get("spec", "")
-                if spec_text:
-                    # Generate a proper spec file from the inline spec
-                    deps_str = ", ".join(feat.get("depends_on", [])) or "None"
-                    full_spec = (
-                        f"# {feat['id']}: {feat['title']}\n\n"
-                        f"## Dependencies\n{deps_str}\n\n"
-                        f"## Requirements & Acceptance Criteria\n{spec_text}\n"
-                    )
-                    self.context.write_spec(feat["id"], full_spec)
-                    log.info("Generated spec file for %s from proposal data", feat["id"])
-                else:
-                    # Minimal fallback
-                    self.context.write_spec(feat["id"],
-                        f"# {feat['id']}: {feat['title']}\n\nNo detailed spec provided by Head Leader.\n")
+                deps_str = ", ".join(feat.get("depends_on", [])) or "None"
+                full_spec = (
+                    f"# {feat['id']}: {feat['title']}\n\n"
+                    f"## Dependencies\n{deps_str}\n\n"
+                    f"## Requirements & Acceptance Criteria\n{spec_text or 'No detailed spec.'}\n"
+                )
+                self.context.write_spec(feat["id"], full_spec)
+
+            # Create GitHub issue for this feature, linked to the idea issue
+            feat_issue_num = 0
+            if idea_issue_num:
+                feat_issue = await self.github.create_feat_issue(
+                    title=f"{feat['id']}: {feat['title']}",
+                    body=self.context.read_spec(feat["id"]) or "",
+                    parent_number=idea_issue_num,
+                )
+                if feat_issue:
+                    feat_issue_num = feat_issue["number"]
 
             task = await self.task_queue.add_task(
                 task_id=feat["id"],
@@ -225,6 +250,10 @@ class Orchestrator:
                 spec_path=str(spec_path),
             )
             tasks.append(task)
+
+            # Store issue number for branch linking
+            if feat_issue_num:
+                feat["_issue_number"] = feat_issue_num
 
         await self.task_queue.update_proposal_status(proposal_id, "approved")
         await self._emit("proposal_approved", {
@@ -343,15 +372,14 @@ class Orchestrator:
     # ── Human Review Actions ────────────────────────────────────────
 
     async def accept_task(self, task_id: str) -> None:
-        """Human accepts a task: create PR and mark DONE.
-
-        The actual code merge happens on GitHub via the PR.
-        Pipeline continues (downstream tasks unblocked) — they'll work
-        on their own branches based on main.
-        """
+        """Human accepts a task: push branch, create PR, mark DONE."""
         await self.task_queue.transition(task_id, TaskStatus.ACCEPTED)
 
         task = await self.task_queue.get_task(task_id)
+        branch = self.worktree.get_branch_name(task_id)
+
+        # Push branch to remote
+        await self.worktree.push_branch(task_id)
 
         # Build PR body from spec + FI report
         spec = self.context.read_spec(task_id) or ""
@@ -361,11 +389,15 @@ class Orchestrator:
             pr_body += f"### Spec\n{spec}\n\n"
         if report:
             pr_body += f"### Verification Report\n{report}\n\n"
-        pr_body += "---\nGenerated by [Orchestra](https://github.com/Jerrybery/orchestra-multiagent)"
+        pr_body += "---\n*Generated by [Orchestra](https://github.com/Jerrybery/orchestra-multiagent)*"
 
-        # Create PR
-        pr_ok, pr_url = await self.worktree.create_pr(
-            task_id,
+        # Get the target base branch
+        base = await self.github.get_main_branch()
+
+        # Create PR via GitHub
+        pr_ok, pr_url = await self.github.create_pr(
+            branch=branch,
+            base=base,
             title=f"{task_id}: {task.title}",
             body=pr_body,
         )
@@ -379,10 +411,71 @@ class Orchestrator:
             await self._emit("task_done", {"task_id": task_id, "pr_failed": pr_url})
             log.warning("PR creation failed for %s: %s", task_id, pr_url)
 
-        # Promote downstream tasks — they branch from main independently
+        # Promote downstream tasks
         promoted = await self.task_queue.promote_ready_tasks()
         if promoted:
             await self._emit("tasks_promoted", {"task_ids": [t.id for t in promoted]})
+
+        # Check if all tasks for this requirement are DONE → create idea merge branch
+        if task.requirement_id:
+            await self._maybe_create_idea_branch(task.requirement_id)
+
+    async def _maybe_create_idea_branch(self, requirement_id: str) -> None:
+        """If all tasks for a requirement are DONE, create a combined idea branch."""
+        all_tasks = await self.task_queue.get_tasks()
+        req_tasks = [t for t in all_tasks if t.requirement_id == requirement_id]
+
+        if not req_tasks or not all(t.status == TaskStatus.DONE for t in req_tasks):
+            return  # not all done yet
+
+        # Get the requirement to build the branch name
+        req = await self.task_queue.get_requirement(requirement_id)
+        if not req:
+            return
+
+        # Build idea branch name from requirement content
+        import re as _re
+        slug = _re.sub(r'[^a-z0-9]+', '-', req.content[:60].lower()).strip('-')
+        idea_branch = f"feat/realize-{slug}"
+
+        # Create a merge branch that combines all feature branches
+        log.info("All tasks for %s done — creating idea branch %s", requirement_id, idea_branch)
+
+        # Create the idea branch from current HEAD
+        rc, _, err = await self.worktree._run("git", "branch", idea_branch)
+        if rc != 0 and "already exists" not in err:
+            log.warning("Failed to create idea branch: %s", err)
+            return
+
+        # Merge each feature branch into the idea branch
+        for task in req_tasks:
+            feat_branch = self.worktree.get_branch_name(task.id)
+            rc, _, err = await self.worktree._run(
+                "git", "checkout", idea_branch)
+            if rc != 0:
+                continue
+            rc, _, err = await self.worktree._run(
+                "git", "merge", feat_branch, "--no-ff",
+                "-m", f"Merge {feat_branch} into {idea_branch}")
+            if rc != 0:
+                log.warning("Merge %s into idea branch failed: %s", feat_branch, err)
+                await self.worktree._run("git", "merge", "--abort")
+
+        # Push the idea branch
+        await self.worktree._run("git", "push", "-u", "origin", idea_branch)
+
+        # Switch back to main
+        rc, main_branch, _ = await self.worktree._run(
+            "git", "symbolic-ref", "--short", "HEAD")
+        if idea_branch == main_branch:
+            # We're on the idea branch, switch to the default
+            default = await self.github.get_main_branch()
+            await self.worktree._run("git", "checkout", default)
+
+        await self._emit("idea_branch_created", {
+            "requirement_id": requirement_id,
+            "branch": idea_branch,
+        })
 
     async def reject_task(self, task_id: str, reason: str) -> None:
         """Human rejects a task: send back to ASSIGNED with feedback."""
