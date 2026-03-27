@@ -98,45 +98,6 @@ class WorktreeManager:
         log.info("Pushed %s to origin", branch)
         return True
 
-    async def create_pr(self, task_id: str, title: str, body: str) -> tuple[bool, str]:
-        """Create a pull request for a feature branch. Returns (success, pr_url)."""
-        branch = self.get_branch_name(task_id)
-
-        if not await self._has_remote():
-            return False, "no remote"
-
-        # Ensure branch is pushed
-        await self.push_branch(task_id)
-
-        # Get main branch name
-        rc, main_branch, _ = await self._run("git", "symbolic-ref", "--short", "HEAD")
-        if rc != 0:
-            main_branch = "main"
-
-        rc, out, err = await self._run(
-            "gh", "pr", "create",
-            "--base", main_branch,
-            "--head", branch,
-            "--title", title,
-            "--body", body,
-        )
-        if rc != 0:
-            # Maybe PR already exists
-            if "already exists" in err.lower():
-                # Get existing PR URL
-                rc2, url, _ = await self._run(
-                    "gh", "pr", "view", branch, "--json", "url", "--jq", ".url"
-                )
-                if rc2 == 0 and url:
-                    log.info("PR already exists for %s: %s", branch, url)
-                    return True, url
-            log.error("Failed to create PR for %s: %s", branch, err)
-            return False, err[:200]
-
-        pr_url = out.strip()
-        log.info("Created PR for %s: %s", branch, pr_url)
-        return True, pr_url
-
     async def push_main(self) -> bool:
         """Push the main branch to remote after merge."""
         if not await self._has_remote():

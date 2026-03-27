@@ -27,7 +27,7 @@ This is a git worktree on a dedicated branch. You have full read/write access.
 2. **Respect interfaces** — if API contracts define an interface you depend on, use it exactly
 3. **Update contracts if needed** — if your implementation requires a new or modified interface that other features may depend on, update the relevant file in `{api_contracts_dir}/`
 4. **Write tests** — include unit tests for your feature unless conventions say otherwise
-5. **Commit your work** — make meaningful git commits on your branch when done
+5. **Commit your work** — make meaningful git commits on your branch when done. If an issue number is provided below, reference it in commit messages (e.g. "feat: add login API, refs #12")
 6. **Stay scoped** — only implement what the spec asks for, nothing more
 
 ## Output
