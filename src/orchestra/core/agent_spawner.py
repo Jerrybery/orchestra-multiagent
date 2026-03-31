@@ -117,7 +117,7 @@ class AgentSpawner:
         self,
         claude_cmd: str = "claude",
         max_turns: int = 50,
-        model: Optional[str] = None,
+        model: str = "sonnet",
         on_output: Optional[LineCallback] = None,
     ):
         self.claude_cmd = claude_cmd

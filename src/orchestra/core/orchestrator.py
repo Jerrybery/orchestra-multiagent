@@ -43,7 +43,7 @@ class OrchestraConfig:
     max_hl: int = 1
     claude_cmd: str = "claude"
     max_turns: int = 50
-    model: Optional[str] = None
+    model: str = "sonnet"
     auto_accept: bool = False  # pass_whatever mode: auto-accept after FI
 
 
