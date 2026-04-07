@@ -238,6 +238,27 @@ class GitHubManager:
         )
         return rc == 0
 
+    async def list_issues(self, state: str = "open", labels: str = "",
+                         limit: int = 50) -> list[dict]:
+        """List issues with optional label filter."""
+        if not await self.is_available():
+            return []
+        cmd = [
+            "gh", "issue", "list",
+            "--state", state,
+            "--json", "number,title,body,labels,state,updatedAt,createdAt,author,comments,url",
+            "--limit", str(limit),
+        ]
+        if labels:
+            cmd.extend(["--label", labels])
+        rc, out, _ = await self._run(*cmd)
+        if rc != 0 or not out:
+            return []
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError:
+            return []
+
     async def get_main_branch(self) -> str:
         """Get the default branch name."""
         rc, out, _ = await self._run(

@@ -258,6 +258,29 @@ async def get_graph():
             ]}
 
 
+@app.get("/api/issues")
+async def get_issues(state: str = "open", label: Optional[str] = None):
+    """Fetch GitHub issues for the connected project."""
+    orch = _orch()
+    issues = await orch.github.list_issues(state=state, labels=label or "")
+    # Normalize for frontend
+    return [
+        {
+            "number": i.get("number"),
+            "title": i.get("title", ""),
+            "url": i.get("url", ""),
+            "state": i.get("state", "open"),
+            "labels": [lb.get("name", "") for lb in i.get("labels", [])],
+            "author": i.get("author", {}).get("login", "unknown"),
+            "comment_count": len(i.get("comments", [])),
+            "created_at": i.get("createdAt", ""),
+            "updated_at": i.get("updatedAt", ""),
+            "body_preview": (i.get("body") or "")[:200],
+        }
+        for i in issues
+    ]
+
+
 @app.get("/api/branches")
 async def get_branches():
     orch = _orch()

@@ -969,6 +969,8 @@ document.querySelectorAll('.log-tab').forEach(tab => {
 function switchTab(tabName) {
   document.querySelectorAll('.log-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
   document.querySelectorAll('.log-tab-content').forEach(c => c.classList.toggle('active', c.id === `tab-${tabName}`));
+  // Refresh issues when switching to the issues tab
+  if (tabName === 'issues' && !issuesCache.length) fetchIssues();
 }
 
 // ── SSE Event stream ────────────────────────────────────────────
@@ -1145,10 +1147,94 @@ function startDashboard() {
   fetchGraph();
   fetchAgents();
   fetchTrackingStatus();
+  fetchIssues();
   setInterval(fetchAgents, 5000);
   setInterval(fetchGraph, 10000);
+  setInterval(() => { if (document.querySelector('.log-tab[data-tab="issues"].active')) fetchIssues(); }, 30000);
   connectSSE();
 }
+
+// ── Issues Tab ─────────────────────────────────────────────────
+
+let issuesState = 'open';
+let issuesCache = [];
+
+async function fetchIssues(state) {
+  if (state) issuesState = state;
+  const list = document.getElementById('issues-list');
+  if (!list) return;
+  list.innerHTML = '<div class="issues-loading">Loading issues...</div>';
+
+  try {
+    const res = await fetch(`/api/issues?state=${issuesState}`);
+    if (!res.ok) throw new Error('Failed to fetch');
+    issuesCache = await res.json();
+    renderIssuesList(issuesCache);
+  } catch (e) {
+    list.innerHTML = `<div class="issues-empty">Could not load issues: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderIssuesList(issues) {
+  const list = document.getElementById('issues-list');
+  if (!list) return;
+
+  if (!issues.length) {
+    list.innerHTML = '<div class="issues-empty">No issues found</div>';
+    return;
+  }
+
+  let html = '';
+  for (const issue of issues) {
+    const labels = (issue.labels || []).map(l => {
+      const cls = ['discuss','idea','feat','bug','rfc','orchestra-ready'].includes(l) ? ` l-${l}` : '';
+      return `<span class="issue-label${cls}">${esc(l)}</span>`;
+    }).join('');
+
+    const timeAgo = formatTimeAgo(issue.updated_at || issue.created_at);
+    const comments = issue.comment_count || 0;
+    const url = issue.url || '#';
+
+    html += `<div class="issue-row">
+      <span class="issue-number">#${issue.number}</span>
+      <div class="issue-main">
+        <div class="issue-title"><a href="${esc(url)}" target="_blank" rel="noopener">${esc(issue.title)}</a></div>
+        <div class="issue-meta">
+          @${esc(issue.author)} · ${timeAgo}
+          ${labels ? '<span class="issue-labels">' + labels + '</span>' : ''}
+        </div>
+      </div>
+      <span class="issue-comments">${comments > 0 ? comments + ' comment' + (comments > 1 ? 's' : '') : ''}</span>
+    </div>`;
+  }
+  list.innerHTML = html;
+}
+
+function formatTimeAgo(dateStr) {
+  if (!dateStr) return '';
+  try {
+    const d = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now - d;
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return 'just now';
+    if (diffMin < 60) return `${diffMin}m ago`;
+    const diffH = Math.floor(diffMin / 60);
+    if (diffH < 24) return `${diffH}h ago`;
+    const diffD = Math.floor(diffH / 24);
+    if (diffD < 30) return `${diffD}d ago`;
+    return d.toLocaleDateString();
+  } catch { return dateStr; }
+}
+
+// Issues filter buttons
+document.querySelectorAll('.issues-filter').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.issues-filter').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    fetchIssues(btn.dataset.state);
+  });
+});
 
 // ── Discussion Tracking ────────────────────────────────────────
 
