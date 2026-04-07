@@ -265,67 +265,131 @@ function renderGraph() {
   svg.setAttribute('width', layout.width);
   svg.setAttribute('height', layout.height);
 
-  // ── Commit rail line (extends down to ideas) ──
+  // ── Faint grid tick marks on left margin for visual rhythm ──
   if (layout.commitPositions.length) {
-    const first = layout.commitPositions[0];
-    // Find the lowest Y of any idea node to extend the rail there
-    const reqs = nodes.filter(n => n.type === 'requirement');
-    const ideaYs = reqs.map(r => layout.positions[r.id]?.y).filter(Boolean);
-    const railEndY = Math.max(
-      layout.commitPositions[layout.commitPositions.length - 1].y,
-      ...ideaYs
-    );
-
-    svg.appendChild(svgEl('line', {
-      x1: COMMIT_X, y1: first.y, x2: COMMIT_X, y2: railEndY,
-      stroke: '#30363d', 'stroke-width': 2, opacity: 0.6,
-    }));
+    const firstY = layout.commitPositions[0].y;
+    const lastY = layout.commitPositions[layout.commitPositions.length - 1].y;
+    for (let ty = firstY; ty <= lastY; ty += COMMIT_Y_STEP) {
+      svg.appendChild(svgEl('line', {
+        x1: 8, y1: ty, x2: 18, y2: ty,
+        stroke: '#30363d', 'stroke-width': 1, opacity: 0.3,
+      }));
+    }
   }
 
-  // ── Commit parent edges ──
+  // ── Per-branch trunk lines ──
+  if (layout.commitPositions.length) {
+    // Group commits by lane, draw a trunk line per branch lane
+    const laneCommits = {};
+    for (const c of layout.commitPositions) {
+      (laneCommits[c.lane] = laneCommits[c.lane] || []).push(c);
+    }
+    // Find the lowest Y of any idea node to extend main trunk there
+    const reqs = nodes.filter(n => n.type === 'requirement');
+    const ideaYs = reqs.map(r => layout.positions[r.id]?.y).filter(Boolean);
+
+    for (const [lane, lcs] of Object.entries(laneCommits)) {
+      if (lcs.length < 1) continue;
+      const ys = lcs.map(c => c.y);
+      let topY = Math.min(...ys);
+      let botY = Math.max(...ys);
+      // Extend main lane (0) down to idea nodes if needed
+      if (parseInt(lane) === 0 && ideaYs.length) {
+        botY = Math.max(botY, ...ideaYs);
+      }
+      const lx = lcs[0].x;
+      const branchColor = lcs[0].color || '#30363d';
+      svg.appendChild(svgEl('line', {
+        x1: lx, y1: topY, x2: lx, y2: botY,
+        stroke: branchColor, 'stroke-width': 2, opacity: 0.35,
+      }));
+    }
+  }
+
+  // ── Commit parent edges (curved bezier for cross-lane, straight for same-lane) ──
   for (const c of commits) {
     const pos = layout.positions[`commit:${c.hash}`];
     if (!pos) continue;
     for (const parentHash of (c.parents || [])) {
       const parentPos = layout.positions[`commit:${parentHash}`];
       if (parentPos) {
-        svg.appendChild(svgEl('line', {
-          x1: pos.x, y1: pos.y, x2: parentPos.x, y2: parentPos.y,
-          stroke: '#30363d', 'stroke-width': 2, opacity: 0.4,
-        }));
+        if (pos.lane === parentPos.lane) {
+          // Same lane: straight line
+          svg.appendChild(svgEl('line', {
+            x1: pos.x, y1: pos.y, x2: parentPos.x, y2: parentPos.y,
+            stroke: pos.color || '#30363d', 'stroke-width': 2, opacity: 0.4,
+          }));
+        } else {
+          // Cross-lane: cubic bezier curve
+          const midY = (pos.y + parentPos.y) / 2;
+          svg.appendChild(svgEl('path', {
+            d: `M${pos.x},${pos.y} C${pos.x},${midY} ${parentPos.x},${midY} ${parentPos.x},${parentPos.y}`,
+            fill: 'none', stroke: pos.color || '#30363d',
+            'stroke-width': 2, opacity: 0.4,
+          }));
+        }
       }
     }
   }
+
+  // ── SVG defs for HEAD glow filter ──
+  const defs = svgEl('defs', {});
+  const filter = svgEl('filter', { id: 'head-glow', x: '-50%', y: '-50%', width: '200%', height: '200%' });
+  const feGlow = svgEl('feGaussianBlur', { stdDeviation: 4, result: 'glow' });
+  filter.appendChild(feGlow);
+  const feMerge = svgEl('feMerge', {});
+  feMerge.appendChild(svgEl('feMergeNode', { in: 'glow' }));
+  feMerge.appendChild(svgEl('feMergeNode', { in: 'SourceGraphic' }));
+  filter.appendChild(feMerge);
+  defs.appendChild(filter);
+  svg.appendChild(defs);
 
   // ── Commit nodes (ring style, hover for details) ──
   for (const c of layout.commitPositions) {
     const g = svgEl('g', { transform: `translate(${c.x},${c.y})`, class: 'dag-node' });
     const isHead = c.is_head;
+    const isMerge = c.isMerge;
+    const nodeR = isMerge ? COMMIT_R + 1 : COMMIT_R;
+
+    // Subtle glow behind HEAD commit
+    if (isHead) {
+      g.appendChild(svgEl('circle', {
+        r: nodeR + 8, fill: '#f0883e', opacity: 0.15, filter: 'url(#head-glow)',
+      }));
+    }
 
     // Outer ring — bigger and brighter for HEAD
     g.appendChild(svgEl('circle', {
-      r: isHead ? COMMIT_R + 4 : COMMIT_R + 2,
+      r: isHead ? nodeR + 4 : nodeR + 2,
       fill: 'none',
       stroke: isHead ? '#f0883e' : '#fff',
       'stroke-width': isHead ? 2.5 : 1.5,
       opacity: isHead ? 1 : 0.7,
     }));
-    // Inner filled circle
-    g.appendChild(svgEl('circle', { r: COMMIT_R, fill: c.color }));
+    // Inner filled circle (merge commits slightly larger)
+    g.appendChild(svgEl('circle', { r: nodeR, fill: c.color }));
 
-    // Branch label (small, always visible if it has a branch ref)
+    // Branch labels as rounded pill badges, stacked vertically
     if (c.branches.length) {
       for (let i = 0; i < c.branches.length; i++) {
-        const tag = svgEl('g', { transform: `translate(${COMMIT_R + 8}, ${-6 + i * 14})` });
+        const pillG = svgEl('g', { transform: `translate(${nodeR + 10}, ${-8 + i * 18})` });
         const brName = c.branches[i];
+        const brColor = layout.branchColorMap[brName] || '#8b949e';
+        // Pill background
+        const pillW = brName.length * 6.5 + 12;
+        pillG.appendChild(svgEl('rect', {
+          x: -4, y: -10, width: pillW, height: 16, rx: 8, ry: 8,
+          fill: brColor, opacity: 0.15, stroke: brColor, 'stroke-width': 0.5, 'stroke-opacity': 0.4,
+        }));
+        // Pill text
         const textEl = svgEl('text', {
-          'font-size': 10, fill: layout.branchColorMap[brName] || '#8b949e',
-          'font-family': 'monospace',
+          x: pillW / 2 - 4, y: 1, 'text-anchor': 'middle',
+          'font-size': 10, fill: brColor,
+          'font-family': 'monospace', 'font-weight': '500',
         });
         textEl.textContent = brName;
-        // Background pill
-        tag.appendChild(textEl);
-        g.appendChild(tag);
+        pillG.appendChild(textEl);
+        g.appendChild(pillG);
       }
     }
 
@@ -351,9 +415,10 @@ function renderGraph() {
     const iPos = layout.positions[req.id];
     if (!iPos) continue;
 
-    // Dashed line from commit rail to idea
+    // Dashed line from main lane commit rail to idea
+    const mainLaneX = COMMIT_X_BASE; // main/master is always lane 0
     svg.appendChild(svgEl('line', {
-      x1: COMMIT_X, y1: iPos.y, x2: iPos.x - IDEA_R, y2: iPos.y,
+      x1: mainLaneX, y1: iPos.y, x2: iPos.x - IDEA_R, y2: iPos.y,
       stroke: '#da70d6', 'stroke-width': 1.5, 'stroke-dasharray': '6 3', opacity: 0.5,
     }));
 
@@ -361,7 +426,7 @@ function renderGraph() {
     // Trunk X is midway between idea right edge and feature left edge
     const myFeats = allFeatures.filter(f => f.requirement_id === req.id);
     if (myFeats.length) {
-      const trunkX = FEAT_X - 30; // trunk line is 30px left of feature nodes
+      const trunkX = layout.featX - 30; // trunk line is 30px left of feature nodes
       const featYs = myFeats.map(f => layout.positions[f.id]?.y).filter(Boolean);
       if (featYs.length) {
         const minFY = Math.min(...featYs);
@@ -405,7 +470,7 @@ function renderGraph() {
     const depEdges = edges.filter(e => e.type === 'dependency' || e.type === 'proposal_dep');
     // Filter: only edges touching the selected node
     const relevant = depEdges.filter(e => e.from === selectedNodeId || e.to === selectedNodeId);
-    const depLaneX = FEAT_X - 18;
+    const depLaneX = layout.featX - 18;
 
     for (let i = 0; i < relevant.length; i++) {
       const edge = relevant[i];
