@@ -130,6 +130,114 @@ class GitHubManager:
 
         return True, out.strip()
 
+    # ── Issue Reading & Interaction ──────────────────────────
+
+    async def list_issues_by_label(self, label: str, state: str = "open") -> list[dict]:
+        """List issues with a specific label."""
+        if not await self.is_available():
+            return []
+        rc, out, _ = await self._run(
+            "gh", "issue", "list",
+            "--label", label, "--state", state,
+            "--json", "number,title,body,labels,updatedAt,createdAt",
+            "--limit", "30",
+        )
+        if rc != 0 or not out:
+            return []
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError:
+            return []
+
+    async def get_issue(self, issue_number: int) -> Optional[dict]:
+        """Get a single issue with full details and comments."""
+        if not await self.is_available():
+            return None
+        rc, out, _ = await self._run(
+            "gh", "issue", "view", str(issue_number),
+            "--json", "number,title,body,labels,comments,state,createdAt,updatedAt",
+        )
+        if rc != 0 or not out:
+            return None
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError:
+            return None
+
+    async def get_issue_comments(self, issue_number: int) -> list[dict]:
+        """Get all comments on an issue."""
+        detail = await self.get_issue(issue_number)
+        if not detail:
+            return []
+        return detail.get("comments", [])
+
+    async def get_issue_timeline(self, issue_number: int) -> list[dict]:
+        """Get issue timeline events (for discovering cross-references)."""
+        if not await self.is_available():
+            return []
+        rc, out, _ = await self._run(
+            "gh", "api",
+            f"repos/{{owner}}/{{repo}}/issues/{issue_number}/timeline",
+            "--paginate",
+        )
+        if rc != 0 or not out:
+            return []
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError:
+            return []
+
+    async def find_linked_issues(self, issue_number: int) -> list[int]:
+        """Extract all issue numbers referenced from an issue's body, comments, and timeline."""
+        detail = await self.get_issue(issue_number)
+        if not detail:
+            return []
+
+        refs: set[int] = set()
+
+        # From body
+        refs.update(self._extract_issue_refs(detail.get("body", "")))
+
+        # From comments
+        for comment in detail.get("comments", []):
+            refs.update(self._extract_issue_refs(comment.get("body", "")))
+
+        # From timeline cross-references
+        timeline = await self.get_issue_timeline(issue_number)
+        for event in timeline:
+            if event.get("event") == "cross-referenced":
+                source = event.get("source", {}).get("issue", {})
+                if source.get("number"):
+                    refs.add(source["number"])
+
+        refs.discard(issue_number)
+        return sorted(refs)
+
+    @staticmethod
+    def _extract_issue_refs(text: str) -> set[int]:
+        """Extract #N issue references from text."""
+        return {int(m) for m in re.findall(r'#(\d+)', text or "")}
+
+    async def post_issue_comment(self, issue_number: int, body: str) -> bool:
+        """Post a comment on an issue."""
+        if not await self.is_available():
+            return False
+        rc, _, err = await self._run(
+            "gh", "issue", "comment", str(issue_number), "--body", body,
+        )
+        if rc != 0:
+            log.error("Failed to comment on #%d: %s", issue_number, err)
+        return rc == 0
+
+    async def add_label(self, issue_number: int, label: str) -> bool:
+        """Add a label to an issue."""
+        if not await self.is_available():
+            return False
+        rc, _, _ = await self._run(
+            "gh", "issue", "edit", str(issue_number), "--add-label", label,
+        )
+        return rc == 0
+
     async def get_main_branch(self) -> str:
         """Get the default branch name."""
         rc, out, _ = await self._run(
