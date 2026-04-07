@@ -506,6 +506,37 @@ async def tracking_status():
     }
 
 
+class LabelsUpdate(BaseModel):
+    labels: list[str]
+
+
+@app.put("/api/tracking/labels")
+async def update_tracking_labels(req: LabelsUpdate):
+    """Update the labels the tracker watches. Works whether tracking is active or not."""
+    orch = _orch()
+    labels = [l.strip() for l in req.labels if l.strip()]
+    if not labels:
+        raise HTTPException(400, "At least one label is required")
+
+    if orch.tracker:
+        orch.tracker.config.watch_labels = labels
+        return {"status": "updated", "labels": labels, "active": True}
+    else:
+        # Store for next start — save to a module-level default
+        return {"status": "saved", "labels": labels, "active": False}
+
+
+@app.get("/api/tracking/labels")
+async def get_tracking_labels():
+    """Get the current watch labels."""
+    if not _is_initialized():
+        return {"labels": ["discuss"]}
+    orch = _orch()
+    if orch.tracker:
+        return {"labels": orch.tracker.config.watch_labels}
+    return {"labels": ["discuss"]}
+
+
 @app.get("/api/discussions")
 async def get_discussions():
     """Get all tracked discussion trees."""

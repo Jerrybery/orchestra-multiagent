@@ -1247,7 +1247,7 @@ async function toggleWatch() {
       const res = await fetch('/api/tracking/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ labels: ['discuss'], poll_interval: 120, auto_submit: false }),
+        body: JSON.stringify({ labels: watchLabels, poll_interval: 120, auto_submit: false }),
       });
       if (res.ok) watchActive = true;
     } else {
@@ -1273,12 +1273,89 @@ async function fetchTrackingStatus() {
     if (res.ok) {
       const data = await res.json();
       watchActive = data.active;
+      if (data.labels) watchLabels = data.labels;
       updateWatchBtn();
+      renderTagPills();
     }
   } catch (e) {
     // tracking endpoint may not exist yet
   }
+  // Also fetch saved labels if tracker not active
+  try {
+    const res = await fetch('/api/tracking/labels');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.labels) watchLabels = data.labels;
+      renderTagPills();
+    }
+  } catch (e) {}
 }
+
+// ── Tag Editor ─────────────────────────────────────────────────
+
+let watchLabels = ['discuss'];
+let tagEditorOpen = false;
+
+function renderTagPills() {
+  const container = document.getElementById('tag-pills');
+  if (!container) return;
+  container.innerHTML = watchLabels.map(label =>
+    `<span class="tag-pill">${esc(label)}<button class="tag-pill-remove" onclick="removeWatchTag('${esc(label)}')">&times;</button></span>`
+  ).join('');
+}
+
+async function addWatchTag() {
+  const input = document.getElementById('tag-input');
+  const tag = input.value.trim().toLowerCase();
+  if (!tag || watchLabels.includes(tag)) { input.value = ''; return; }
+
+  watchLabels.push(tag);
+  input.value = '';
+  renderTagPills();
+  await saveWatchLabels();
+}
+
+async function removeWatchTag(tag) {
+  watchLabels = watchLabels.filter(l => l !== tag);
+  if (!watchLabels.length) watchLabels = ['discuss']; // always keep at least one
+  renderTagPills();
+  await saveWatchLabels();
+}
+
+async function saveWatchLabels() {
+  try {
+    await fetch('/api/tracking/labels', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ labels: watchLabels }),
+    });
+  } catch (e) {
+    console.error('saveWatchLabels error:', e);
+  }
+}
+
+function toggleTagEditor() {
+  tagEditorOpen = !tagEditorOpen;
+  document.getElementById('tag-editor').classList.toggle('hidden', !tagEditorOpen);
+}
+
+// Close tag editor on outside click
+document.addEventListener('click', (e) => {
+  if (tagEditorOpen && !e.target.closest('.watch-group')) {
+    tagEditorOpen = false;
+    document.getElementById('tag-editor').classList.add('hidden');
+  }
+});
+
+document.getElementById('btn-watch-tags').addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleTagEditor();
+});
+
+// Enter key in tag input
+document.getElementById('tag-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); addWatchTag(); }
+});
 
 async function fetchDiscussions() {
   const titleEl = document.getElementById('detail-title');
