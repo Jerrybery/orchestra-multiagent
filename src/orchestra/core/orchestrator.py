@@ -15,6 +15,7 @@ from .context_manager import ContextManager
 from .worktree_manager import WorktreeManager
 from .github_manager import GitHubManager
 from .agent_spawner import AgentSpawner, AgentRole, AgentHandle, AgentResult
+from .issue_tracker import IssueTracker, WatchConfig, DiscussionTree
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ class Orchestrator:
         self._running_tasks: dict[str, AgentHandle] = {}  # task_id -> handle
         self._on_event: Optional[Callable[[str, dict], Awaitable[None]]] = None
         self._stop = False
+        self.tracker: Optional[IssueTracker] = None
 
     async def init(self) -> None:
         """Initialize all subsystems."""
@@ -97,6 +99,81 @@ class Orchestrator:
         await self.task_queue.add_event(event, data)
         if self._on_event:
             await self._on_event(event, data)
+
+    # ── Discussion Tracking ──────────────────────────────────────────
+
+    async def start_tracking(self, watch_config: WatchConfig) -> None:
+        """Start watching GitHub issues for discussions."""
+        self.tracker = IssueTracker(
+            github=self.github,
+            spawner=self.spawner,
+            task_queue=self.task_queue,
+            project_dir=self.config.project_dir,
+            orchestra_dir=self.config.orchestra_dir,
+            config=watch_config,
+            on_event=self._on_event,
+            on_ready=self._on_discussion_ready,
+        )
+        asyncio.create_task(self.tracker.run())
+        await self._emit("tracking_started", {"labels": watch_config.watch_labels})
+
+    def stop_tracking(self) -> None:
+        """Stop the issue tracker."""
+        if self.tracker:
+            self.tracker.stop()
+            self.tracker = None
+
+    async def _on_discussion_ready(self, tree: DiscussionTree, requirement: str) -> None:
+        """Called when a discussion tree matures — submit as requirement."""
+        tagged_req = (
+            f"[From Discussion Tree #{tree.root_issue}: {tree.title}]\n"
+            f"[Tracked issues: {', '.join(f'#{n}' for n in tree.all_issue_numbers)}]\n\n"
+            f"{requirement}"
+        )
+
+        if self.tracker and self.tracker.config.auto_submit:
+            proposal_id = await self.submit_requirement(tagged_req)
+            await self.github.post_issue_comment(
+                tree.root_issue,
+                f"This discussion has been submitted for implementation.\n"
+                f"Proposal: `{proposal_id}`\n\n"
+                f"Tracked sub-issues: {', '.join(f'#{n}' for n in tree.all_issue_numbers)}",
+            )
+            tree.status = "submitted"
+            await self.task_queue.update_discussion(tree.root_issue, status="submitted")
+        else:
+            await self._emit("discussion_pending_submit", {
+                "root_issue": tree.root_issue,
+                "title": tree.title,
+                "requirement": tagged_req[:500],
+                "issue_count": len(tree.nodes),
+            })
+
+    async def submit_discussion(self, root_issue: int) -> str:
+        """Manually submit a ready discussion for implementation."""
+        if not self.tracker:
+            raise ValueError("Tracker not running")
+        tree = self.tracker.get_tree(root_issue)
+        if not tree:
+            raise ValueError(f"Discussion #{root_issue} not found")
+        if tree.status != "ready":
+            raise ValueError(f"Discussion #{root_issue} is '{tree.status}', not ready")
+
+        # Build requirement from last analysis
+        tagged_req = (
+            f"[From Discussion Tree #{tree.root_issue}: {tree.title}]\n"
+            f"[Tracked issues: {', '.join(f'#{n}' for n in tree.all_issue_numbers)}]\n\n"
+            f"{tree.last_analysis}"
+        )
+        proposal_id = await self.submit_requirement(tagged_req)
+
+        await self.github.post_issue_comment(
+            tree.root_issue,
+            f"Discussion submitted for implementation. Proposal: `{proposal_id}`",
+        )
+        tree.status = "submitted"
+        await self.task_queue.update_discussion(root_issue, status="submitted")
+        return proposal_id
 
     # ── Prompt Loading ──────────────────────────────────────────────
 

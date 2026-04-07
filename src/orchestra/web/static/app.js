@@ -74,11 +74,11 @@ async function fetchProposalDetail(proposalId) {
 
 // ── Layout Constants ────────────────────────────────────────────
 
-const COMMIT_Y_STEP = 32;
-const COMMIT_X = 50;
-const IDEA_OFFSET_X = 160;   // horizontal distance from commit rail to idea node
-const FEAT_X = 440;          // X position of feature nodes — well to the right
-const FEAT_ROW_H = 64;       // vertical spacing between feature rows
+const COMMIT_Y_STEP = 28;
+const COMMIT_X_BASE = 50;    // leftmost lane X
+const LANE_WIDTH = 24;       // horizontal distance between branch lanes
+const IDEA_OFFSET_X = 120;   // horizontal distance from rightmost lane to idea node
+const FEAT_ROW_H = 52;       // vertical spacing between feature rows
 const PAD_TOP = 40;
 const PAD_BOTTOM = 60;
 const IDEA_R = 18;
@@ -94,39 +94,95 @@ function buildLayout() {
   const positions = {};
   let maxX = 500, maxY = 200;
 
-  // Assign colors to branches
+  // Assign colors to branches and determine lane assignments
   const branchColorMap = {};
+  const branchLaneMap = {};
   let colorIdx = 0;
+  let laneIdx = 0;
+
+  // First pass: collect all branch names, assign main/master to lane 0
+  const allBranches = new Set();
   for (const c of commits) {
-    for (const br of c.branches) {
-      if (!branchColorMap[br]) {
-        branchColorMap[br] = BRANCH_COLORS[colorIdx % BRANCH_COLORS.length];
-        colorIdx++;
+    for (const br of c.branches) allBranches.add(br);
+  }
+  // Assign main/master first
+  for (const br of ['main', 'master']) {
+    if (allBranches.has(br)) {
+      branchLaneMap[br] = 0;
+      branchColorMap[br] = BRANCH_COLORS[colorIdx % BRANCH_COLORS.length];
+      colorIdx++;
+      laneIdx = 1;
+      allBranches.delete(br);
+      break;
+    }
+  }
+  // Remaining branches get subsequent lanes
+  for (const br of allBranches) {
+    if (branchLaneMap[br] === undefined) {
+      branchLaneMap[br] = laneIdx++;
+      branchColorMap[br] = BRANCH_COLORS[colorIdx % BRANCH_COLORS.length];
+      colorIdx++;
+    }
+  }
+  const numLanes = Math.max(laneIdx, 1);
+  const defaultCommitColor = '#484f58';
+
+  // Helper: get lane X for a given lane index
+  function laneX(lane) {
+    return COMMIT_X_BASE + lane * LANE_WIDTH;
+  }
+
+  // Build a map from commit hash to its branch (for lane assignment)
+  // Strategy: assign each commit to the lane of its first branch ref,
+  // or inherit from its child commit if no branch ref
+  const commitsReversed = [...commits].reverse();
+  const commitLaneAssignment = {};
+
+  // First: assign commits that have branch refs
+  for (const c of commitsReversed) {
+    if (c.branches.length) {
+      commitLaneAssignment[c.hash] = branchLaneMap[c.branches[0]] ?? 0;
+    }
+  }
+
+  // Second pass (newest to oldest): propagate lane from child to parent
+  // Walk forward (newest first) since children know their lane
+  for (const c of commits) {
+    if (commitLaneAssignment[c.hash] === undefined) {
+      commitLaneAssignment[c.hash] = 0; // default to main lane
+    }
+    // Propagate to parents that don't have assignments yet
+    for (const ph of (c.parents || [])) {
+      if (commitLaneAssignment[ph] === undefined) {
+        commitLaneAssignment[ph] = commitLaneAssignment[c.hash];
       }
     }
   }
-  const defaultCommitColor = '#484f58';
 
-  // ── Commit rail (left column) ──
-  // git log returns newest first; reverse so oldest is at top, newest at bottom
-  // (time flows downward, like a standard git graph)
-  const commitsReversed = [...commits].reverse();
+  // ── Commit positions ──
   const commitPositions = [];
 
   commitsReversed.forEach((c, i) => {
     const y = PAD_TOP + i * COMMIT_Y_STEP;
+    const lane = commitLaneAssignment[c.hash] ?? 0;
+    const x = laneX(lane);
     const color = c.branches.length ? branchColorMap[c.branches[0]] : defaultCommitColor;
-    commitPositions.push({ ...c, x: COMMIT_X, y, color });
-    positions[`commit:${c.hash}`] = { x: COMMIT_X, y, type: 'commit', color, data: c };
+    const isMerge = (c.parents || []).length > 1;
+    commitPositions.push({ ...c, x, y, color, lane, isMerge });
+    positions[`commit:${c.hash}`] = { x, y, type: 'commit', color, data: c, lane, isMerge };
     maxY = Math.max(maxY, y + 40);
   });
 
   // ── Find HEAD commit Y — Ideas branch from here ──
-  // Use is_head flag from backend; fall back to the bottom commit
   const headCommit = commitPositions.find(c => c.is_head);
   const headY = headCommit ? headCommit.y
     : (commitPositions.length ? commitPositions[commitPositions.length - 1].y : PAD_TOP);
   let lastCommitY = headY;
+
+  // ── Dynamic FEAT_X based on number of lanes ──
+  const rightmostLaneX = laneX(numLanes - 1);
+  const ideaX = rightmostLaneX + IDEA_OFFSET_X;
+  const featX = ideaX + IDEA_R + 100; // dynamic feature X based on idea position
 
   // ── Requirements (Ideas) and their features ──
   const reqs = nodes.filter(n => n.type === 'requirement');
@@ -139,8 +195,6 @@ function buildLayout() {
     const rid = f.requirement_id || '__none__';
     (reqGroups[rid] = reqGroups[rid] || []).push(f);
   }
-
-  const ideaX = COMMIT_X + IDEA_OFFSET_X;
 
   // Running Y for feature placement — starts at the Idea Y
   let featCursorY = lastCommitY;
@@ -165,8 +219,8 @@ function buildLayout() {
     // Features: stacked downward starting from ideaY
     features.forEach((feat, row) => {
       const fy = ideaY + row * FEAT_ROW_H;
-      positions[feat.id] = { x: FEAT_X, y: fy, type: feat.type, data: feat, row };
-      maxX = Math.max(maxX, FEAT_X + 220);
+      positions[feat.id] = { x: featX, y: fy, type: feat.type, data: feat, row };
+      maxX = Math.max(maxX, featX + 220);
       maxY = Math.max(maxY, fy + 30);
     });
 
@@ -179,12 +233,13 @@ function buildLayout() {
   // Orphan features (no requirement)
   const orphans = reqGroups['__none__'] || [];
   orphans.forEach((feat, row) => {
-    const fy = blockY + row * FEAT_ROW_H;
-    positions[feat.id] = { x: FEAT_X, y: fy, type: feat.type, data: feat, row };
+    const fy = featCursorY + row * FEAT_ROW_H;
+    positions[feat.id] = { x: featX, y: fy, type: feat.type, data: feat, row };
     maxY = Math.max(maxY, fy + 30);
   });
 
-  return { positions, commitPositions, branchColorMap,
+  return { positions, commitPositions, branchColorMap, branchLaneMap,
+           numLanes, featX, ideaX,
            width: maxX + 80, height: maxY + PAD_BOTTOM };
 }
 
@@ -210,67 +265,131 @@ function renderGraph() {
   svg.setAttribute('width', layout.width);
   svg.setAttribute('height', layout.height);
 
-  // ── Commit rail line (extends down to ideas) ──
+  // ── Faint grid tick marks on left margin for visual rhythm ──
   if (layout.commitPositions.length) {
-    const first = layout.commitPositions[0];
-    // Find the lowest Y of any idea node to extend the rail there
-    const reqs = nodes.filter(n => n.type === 'requirement');
-    const ideaYs = reqs.map(r => layout.positions[r.id]?.y).filter(Boolean);
-    const railEndY = Math.max(
-      layout.commitPositions[layout.commitPositions.length - 1].y,
-      ...ideaYs
-    );
-
-    svg.appendChild(svgEl('line', {
-      x1: COMMIT_X, y1: first.y, x2: COMMIT_X, y2: railEndY,
-      stroke: '#30363d', 'stroke-width': 2, opacity: 0.6,
-    }));
+    const firstY = layout.commitPositions[0].y;
+    const lastY = layout.commitPositions[layout.commitPositions.length - 1].y;
+    for (let ty = firstY; ty <= lastY; ty += COMMIT_Y_STEP) {
+      svg.appendChild(svgEl('line', {
+        x1: 8, y1: ty, x2: 18, y2: ty,
+        stroke: '#30363d', 'stroke-width': 1, opacity: 0.3,
+      }));
+    }
   }
 
-  // ── Commit parent edges ──
+  // ── Per-branch trunk lines ──
+  if (layout.commitPositions.length) {
+    // Group commits by lane, draw a trunk line per branch lane
+    const laneCommits = {};
+    for (const c of layout.commitPositions) {
+      (laneCommits[c.lane] = laneCommits[c.lane] || []).push(c);
+    }
+    // Find the lowest Y of any idea node to extend main trunk there
+    const reqs = nodes.filter(n => n.type === 'requirement');
+    const ideaYs = reqs.map(r => layout.positions[r.id]?.y).filter(Boolean);
+
+    for (const [lane, lcs] of Object.entries(laneCommits)) {
+      if (lcs.length < 1) continue;
+      const ys = lcs.map(c => c.y);
+      let topY = Math.min(...ys);
+      let botY = Math.max(...ys);
+      // Extend main lane (0) down to idea nodes if needed
+      if (parseInt(lane) === 0 && ideaYs.length) {
+        botY = Math.max(botY, ...ideaYs);
+      }
+      const lx = lcs[0].x;
+      const branchColor = lcs[0].color || '#30363d';
+      svg.appendChild(svgEl('line', {
+        x1: lx, y1: topY, x2: lx, y2: botY,
+        stroke: branchColor, 'stroke-width': 2, opacity: 0.35,
+      }));
+    }
+  }
+
+  // ── Commit parent edges (curved bezier for cross-lane, straight for same-lane) ──
   for (const c of commits) {
     const pos = layout.positions[`commit:${c.hash}`];
     if (!pos) continue;
     for (const parentHash of (c.parents || [])) {
       const parentPos = layout.positions[`commit:${parentHash}`];
       if (parentPos) {
-        svg.appendChild(svgEl('line', {
-          x1: pos.x, y1: pos.y, x2: parentPos.x, y2: parentPos.y,
-          stroke: '#30363d', 'stroke-width': 2, opacity: 0.4,
-        }));
+        if (pos.lane === parentPos.lane) {
+          // Same lane: straight line
+          svg.appendChild(svgEl('line', {
+            x1: pos.x, y1: pos.y, x2: parentPos.x, y2: parentPos.y,
+            stroke: pos.color || '#30363d', 'stroke-width': 2, opacity: 0.4,
+          }));
+        } else {
+          // Cross-lane: cubic bezier curve
+          const midY = (pos.y + parentPos.y) / 2;
+          svg.appendChild(svgEl('path', {
+            d: `M${pos.x},${pos.y} C${pos.x},${midY} ${parentPos.x},${midY} ${parentPos.x},${parentPos.y}`,
+            fill: 'none', stroke: pos.color || '#30363d',
+            'stroke-width': 2, opacity: 0.4,
+          }));
+        }
       }
     }
   }
+
+  // ── SVG defs for HEAD glow filter ──
+  const defs = svgEl('defs', {});
+  const filter = svgEl('filter', { id: 'head-glow', x: '-50%', y: '-50%', width: '200%', height: '200%' });
+  const feGlow = svgEl('feGaussianBlur', { stdDeviation: 4, result: 'glow' });
+  filter.appendChild(feGlow);
+  const feMerge = svgEl('feMerge', {});
+  feMerge.appendChild(svgEl('feMergeNode', { in: 'glow' }));
+  feMerge.appendChild(svgEl('feMergeNode', { in: 'SourceGraphic' }));
+  filter.appendChild(feMerge);
+  defs.appendChild(filter);
+  svg.appendChild(defs);
 
   // ── Commit nodes (ring style, hover for details) ──
   for (const c of layout.commitPositions) {
     const g = svgEl('g', { transform: `translate(${c.x},${c.y})`, class: 'dag-node' });
     const isHead = c.is_head;
+    const isMerge = c.isMerge;
+    const nodeR = isMerge ? COMMIT_R + 1 : COMMIT_R;
+
+    // Subtle glow behind HEAD commit
+    if (isHead) {
+      g.appendChild(svgEl('circle', {
+        r: nodeR + 8, fill: '#f0883e', opacity: 0.15, filter: 'url(#head-glow)',
+      }));
+    }
 
     // Outer ring — bigger and brighter for HEAD
     g.appendChild(svgEl('circle', {
-      r: isHead ? COMMIT_R + 4 : COMMIT_R + 2,
+      r: isHead ? nodeR + 4 : nodeR + 2,
       fill: 'none',
       stroke: isHead ? '#f0883e' : '#fff',
       'stroke-width': isHead ? 2.5 : 1.5,
       opacity: isHead ? 1 : 0.7,
     }));
-    // Inner filled circle
-    g.appendChild(svgEl('circle', { r: COMMIT_R, fill: c.color }));
+    // Inner filled circle (merge commits slightly larger)
+    g.appendChild(svgEl('circle', { r: nodeR, fill: c.color }));
 
-    // Branch label (small, always visible if it has a branch ref)
+    // Branch labels as rounded pill badges, stacked vertically
     if (c.branches.length) {
       for (let i = 0; i < c.branches.length; i++) {
-        const tag = svgEl('g', { transform: `translate(${COMMIT_R + 8}, ${-6 + i * 14})` });
+        const pillG = svgEl('g', { transform: `translate(${nodeR + 10}, ${-8 + i * 18})` });
         const brName = c.branches[i];
+        const brColor = layout.branchColorMap[brName] || '#8b949e';
+        // Pill background
+        const pillW = brName.length * 6.5 + 12;
+        pillG.appendChild(svgEl('rect', {
+          x: -4, y: -10, width: pillW, height: 16, rx: 8, ry: 8,
+          fill: brColor, opacity: 0.15, stroke: brColor, 'stroke-width': 0.5, 'stroke-opacity': 0.4,
+        }));
+        // Pill text
         const textEl = svgEl('text', {
-          'font-size': 10, fill: layout.branchColorMap[brName] || '#8b949e',
-          'font-family': 'monospace',
+          x: pillW / 2 - 4, y: 1, 'text-anchor': 'middle',
+          'font-size': 10, fill: brColor,
+          'font-family': 'monospace', 'font-weight': '500',
         });
         textEl.textContent = brName;
-        // Background pill
-        tag.appendChild(textEl);
-        g.appendChild(tag);
+        pillG.appendChild(textEl);
+        g.appendChild(pillG);
       }
     }
 
@@ -296,9 +415,10 @@ function renderGraph() {
     const iPos = layout.positions[req.id];
     if (!iPos) continue;
 
-    // Dashed line from commit rail to idea
+    // Dashed line from main lane commit rail to idea
+    const mainLaneX = COMMIT_X_BASE; // main/master is always lane 0
     svg.appendChild(svgEl('line', {
-      x1: COMMIT_X, y1: iPos.y, x2: iPos.x - IDEA_R, y2: iPos.y,
+      x1: mainLaneX, y1: iPos.y, x2: iPos.x - IDEA_R, y2: iPos.y,
       stroke: '#da70d6', 'stroke-width': 1.5, 'stroke-dasharray': '6 3', opacity: 0.5,
     }));
 
@@ -306,7 +426,7 @@ function renderGraph() {
     // Trunk X is midway between idea right edge and feature left edge
     const myFeats = allFeatures.filter(f => f.requirement_id === req.id);
     if (myFeats.length) {
-      const trunkX = FEAT_X - 30; // trunk line is 30px left of feature nodes
+      const trunkX = layout.featX - 30; // trunk line is 30px left of feature nodes
       const featYs = myFeats.map(f => layout.positions[f.id]?.y).filter(Boolean);
       if (featYs.length) {
         const minFY = Math.min(...featYs);
@@ -350,7 +470,7 @@ function renderGraph() {
     const depEdges = edges.filter(e => e.type === 'dependency' || e.type === 'proposal_dep');
     // Filter: only edges touching the selected node
     const relevant = depEdges.filter(e => e.from === selectedNodeId || e.to === selectedNodeId);
-    const depLaneX = FEAT_X - 18;
+    const depLaneX = layout.featX - 18;
 
     for (let i = 0; i < relevant.length; i++) {
       const edge = relevant[i];
@@ -849,6 +969,8 @@ document.querySelectorAll('.log-tab').forEach(tab => {
 function switchTab(tabName) {
   document.querySelectorAll('.log-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
   document.querySelectorAll('.log-tab-content').forEach(c => c.classList.toggle('active', c.id === `tab-${tabName}`));
+  // Refresh issues when switching to the issues tab
+  if (tabName === 'issues' && !issuesCache.length) fetchIssues();
 }
 
 // ── SSE Event stream ────────────────────────────────────────────
@@ -871,6 +993,11 @@ function connectSSE() {
          ].includes(event)) {
       fetchGraph();
       fetchAgents();
+    }
+
+    if (['discussion_discovered','discussion_commented','discussion_ready','discussion_status_changed'
+         ].includes(event) && discussionsPanelOpen) {
+      fetchDiscussions();
     }
   });
 
@@ -1019,10 +1146,366 @@ function startDashboard() {
   initTooltip();
   fetchGraph();
   fetchAgents();
+  fetchTrackingStatus();
+  fetchIssues();
   setInterval(fetchAgents, 5000);
   setInterval(fetchGraph, 10000);
+  setInterval(() => { if (document.querySelector('.log-tab[data-tab="issues"].active')) fetchIssues(); }, 30000);
   connectSSE();
 }
+
+// ── Issues Tab ─────────────────────────────────────────────────
+
+let issuesState = 'open';
+let issuesCache = [];
+
+async function fetchIssues(state) {
+  if (state) issuesState = state;
+  const list = document.getElementById('issues-list');
+  if (!list) return;
+  list.innerHTML = '<div class="issues-loading">Loading issues...</div>';
+
+  try {
+    const res = await fetch(`/api/issues?state=${issuesState}`);
+    if (!res.ok) throw new Error('Failed to fetch');
+    issuesCache = await res.json();
+    renderIssuesList(issuesCache);
+  } catch (e) {
+    list.innerHTML = `<div class="issues-empty">Could not load issues: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderIssuesList(issues) {
+  const list = document.getElementById('issues-list');
+  if (!list) return;
+
+  if (!issues.length) {
+    list.innerHTML = '<div class="issues-empty">No issues found</div>';
+    return;
+  }
+
+  let html = '';
+  for (const issue of issues) {
+    const labels = (issue.labels || []).map(l => {
+      const cls = ['discuss','idea','feat','bug','rfc','orchestra-ready'].includes(l) ? ` l-${l}` : '';
+      return `<span class="issue-label${cls}">${esc(l)}</span>`;
+    }).join('');
+
+    const timeAgo = formatTimeAgo(issue.updated_at || issue.created_at);
+    const comments = issue.comment_count || 0;
+    const url = issue.url || '#';
+
+    html += `<div class="issue-row">
+      <span class="issue-number">#${issue.number}</span>
+      <div class="issue-main">
+        <div class="issue-title"><a href="${esc(url)}" target="_blank" rel="noopener">${esc(issue.title)}</a></div>
+        <div class="issue-meta">
+          @${esc(issue.author)} · ${timeAgo}
+          ${labels ? '<span class="issue-labels">' + labels + '</span>' : ''}
+        </div>
+      </div>
+      <span class="issue-comments">${comments > 0 ? comments + ' comment' + (comments > 1 ? 's' : '') : ''}</span>
+    </div>`;
+  }
+  list.innerHTML = html;
+}
+
+function formatTimeAgo(dateStr) {
+  if (!dateStr) return '';
+  try {
+    const d = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now - d;
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return 'just now';
+    if (diffMin < 60) return `${diffMin}m ago`;
+    const diffH = Math.floor(diffMin / 60);
+    if (diffH < 24) return `${diffH}h ago`;
+    const diffD = Math.floor(diffH / 24);
+    if (diffD < 30) return `${diffD}d ago`;
+    return d.toLocaleDateString();
+  } catch { return dateStr; }
+}
+
+// Issues filter buttons
+document.querySelectorAll('.issues-filter').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.issues-filter').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    fetchIssues(btn.dataset.state);
+  });
+});
+
+// ── Discussion Tracking ────────────────────────────────────────
+
+let watchActive = false;
+let discussionsPanelOpen = false;
+
+async function toggleWatch() {
+  try {
+    if (!watchActive) {
+      const res = await fetch('/api/tracking/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ labels: ['discuss'], poll_interval: 120, auto_submit: false }),
+      });
+      if (res.ok) watchActive = true;
+    } else {
+      const res = await fetch('/api/tracking/stop', { method: 'POST' });
+      if (res.ok) watchActive = false;
+    }
+  } catch (e) {
+    console.error('toggleWatch error:', e);
+  }
+  updateWatchBtn();
+}
+
+function updateWatchBtn() {
+  const btn = document.getElementById('btn-watch');
+  btn.textContent = `Watch: ${watchActive ? 'ON' : 'OFF'}`;
+  btn.style.borderColor = watchActive ? '#238636' : '';
+  btn.style.color = watchActive ? '#3fb950' : '';
+}
+
+async function fetchTrackingStatus() {
+  try {
+    const res = await fetch('/api/tracking/status');
+    if (res.ok) {
+      const data = await res.json();
+      watchActive = data.active;
+      updateWatchBtn();
+    }
+  } catch (e) {
+    // tracking endpoint may not exist yet
+  }
+}
+
+async function fetchDiscussions() {
+  const titleEl = document.getElementById('detail-title');
+  const contentEl = document.getElementById('detail-content');
+  titleEl.textContent = 'Discussions';
+  discussionsPanelOpen = true;
+
+  try {
+    const res = await fetch('/api/discussions');
+    if (!res.ok) throw new Error('Failed to fetch discussions');
+    const discussions = await res.json();
+    renderDiscussions(discussions);
+  } catch (e) {
+    contentEl.innerHTML = `<div class="disc-empty">
+      <p><b>Could not load discussions</b></p>
+      <p>${esc(e.message)}</p>
+    </div>`;
+  }
+}
+
+async function fetchDiscussionDetail(rootIssue) {
+  const titleEl = document.getElementById('detail-title');
+  const contentEl = document.getElementById('detail-content');
+  titleEl.textContent = `Discussion #${rootIssue}`;
+
+  try {
+    const res = await fetch(`/api/discussions/${encodeURIComponent(rootIssue)}`);
+    if (!res.ok) throw new Error('Failed to fetch discussion detail');
+    const tree = await res.json();
+    renderDiscussionDetail(tree);
+  } catch (e) {
+    contentEl.innerHTML = `<div class="disc-empty">
+      <p><b>Could not load discussion</b></p>
+      <p>${esc(e.message)}</p>
+    </div>`;
+  }
+}
+
+async function submitDiscussion(rootIssue) {
+  try {
+    const res = await fetch(`/api/discussions/${encodeURIComponent(rootIssue)}/submit`, {
+      method: 'POST',
+    });
+    if (res.ok) {
+      addLogEntry('discussion_submitted', `Discussion #${rootIssue} submitted for implementation`);
+      fetchDiscussionDetail(rootIssue);
+    }
+  } catch (e) {
+    console.error('submitDiscussion error:', e);
+  }
+}
+
+function renderDiscussions(discussions) {
+  const contentEl = document.getElementById('detail-content');
+
+  if (!discussions || !discussions.length) {
+    contentEl.innerHTML = `<div class="disc-empty">
+      <p><b>No tracked discussions</b></p>
+      <p>Enable Watch to start tracking issues with the "discuss" label.</p>
+    </div>`;
+    return;
+  }
+
+  let html = '<div class="disc-panel">';
+  for (const disc of discussions) {
+    const status = disc.status || 'watching';
+    const issueCount = disc.issue_count || disc.issues?.length || 0;
+    const rootNum = disc.root_issue || disc.id || '';
+    const title = disc.title || `Discussion #${rootNum}`;
+
+    html += `<div class="disc-tree-card">
+      <div class="disc-tree-header" onclick="fetchDiscussionDetail('${esc(String(rootNum))}')">
+        <span class="disc-issue-num">#${esc(String(rootNum))}</span>
+        <span class="disc-title">${esc(title)}</span>
+        <span class="disc-meta">${issueCount} issue${issueCount !== 1 ? 's' : ''}</span>
+        <span class="disc-status-badge ${esc(status)}">${esc(status)}</span>
+      </div>`;
+
+    // Show collapsed issue list preview
+    if (disc.issues && disc.issues.length) {
+      html += '<div class="disc-issue-list">';
+      for (const issue of disc.issues.slice(0, 5)) {
+        const isRoot = issue.is_root || issue.number === rootNum;
+        html += `<div class="disc-issue-item${isRoot ? ' root' : ''}">
+          <span class="disc-issue-num">#${issue.number || ''}</span>
+          <span class="disc-issue-title">${esc(issue.title || '')}</span>
+          <span class="disc-comment-count">${issue.comment_count || 0} comments</span>
+        </div>`;
+      }
+      if (disc.issues.length > 5) {
+        html += `<div style="font-size:11px;color:var(--text-dim);padding:4px 0">...and ${disc.issues.length - 5} more</div>`;
+      }
+      html += '</div>';
+    }
+
+    html += '</div>';
+  }
+  html += '</div>';
+  contentEl.innerHTML = html;
+}
+
+function renderDiscussionDetail(tree) {
+  const contentEl = document.getElementById('detail-content');
+  const status = tree.status || 'watching';
+  let html = '';
+
+  // Analysis summary
+  if (tree.analysis) {
+    const maturity = tree.analysis.maturity || 0;
+    const maturityPct = Math.round(maturity * 100);
+    const maturityColor = maturity > 0.7 ? 'var(--c-implemented)' : maturity > 0.4 ? 'var(--c-in_progress)' : 'var(--c-rejected)';
+    html += `<div class="disc-analysis">
+      <h4>Analyst Summary</h4>
+      <div class="markdown-body" style="border:none;padding:0;background:transparent">${marked.parse(tree.analysis.summary || 'No summary yet.')}</div>
+      <div class="disc-maturity">
+        <span>Maturity</span>
+        <div class="disc-maturity-bar">
+          <div class="disc-maturity-fill" style="width:${maturityPct}%;background:${maturityColor}"></div>
+        </div>
+        <span>${maturityPct}%</span>
+      </div>
+    </div>`;
+  }
+
+  // Status badge
+  html += `<div class="detail-section">
+    <h3>Status</h3>
+    <span class="disc-status-badge ${esc(status)}">${esc(status)}</span>
+  </div>`;
+
+  // Issue tree
+  html += '<div class="detail-section disc-tree-detail"><h3>Issue Tree</h3>';
+  if (tree.issues && tree.issues.length) {
+    html += renderIssueTree(tree.issues, tree.root_issue);
+  } else {
+    html += '<p style="color:var(--text-dim);font-size:12px">No issues found</p>';
+  }
+  html += '</div>';
+
+  // Recent comments
+  if (tree.recent_comments && tree.recent_comments.length) {
+    html += '<div class="detail-section"><h3>Recent Comments</h3>';
+    for (const comment of tree.recent_comments) {
+      html += `<div class="disc-comment">
+        <div class="disc-comment-author">
+          ${esc(comment.author || 'unknown')}
+          <span class="disc-comment-time">${comment.created_at || ''}</span>
+        </div>
+        <div>${marked.parse(comment.body || '')}</div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+
+  // Submit button for ready discussions
+  if (status === 'ready') {
+    const rootIssue = tree.root_issue || '';
+    html += `<button class="btn btn-primary disc-submit-btn" onclick="submitDiscussion('${esc(String(rootIssue))}')">
+      Submit for Implementation
+    </button>`;
+  }
+
+  // Back link
+  html += `<div style="margin-top:16px">
+    <button class="btn" onclick="fetchDiscussions()" style="font-size:11px">Back to all discussions</button>
+  </div>`;
+
+  contentEl.innerHTML = html;
+}
+
+function renderIssueTree(issues, rootIssue) {
+  // Build a parent->children map
+  const byNumber = {};
+  const children = {};
+  for (const issue of issues) {
+    byNumber[issue.number] = issue;
+    const parent = issue.parent || null;
+    if (!children[parent]) children[parent] = [];
+    children[parent].push(issue);
+  }
+
+  function renderNode(issue, depth) {
+    const num = issue.number || '';
+    const isRoot = issue.is_root || num === rootIssue;
+    const indent = depth * 20;
+    let html = `<div class="disc-issue-node" style="padding-left:${indent}px">
+      <div class="disc-tree-line">
+        <div class="disc-dot" style="background:${isRoot ? 'var(--c-requirement)' : 'var(--accent)'}"></div>
+        <div class="disc-connector"></div>
+      </div>
+      <div style="flex:1">
+        <div>
+          <span style="font-family:monospace;color:var(--accent)">#${esc(String(num))}</span>
+          <span style="margin-left:6px">${esc(issue.title || '')}</span>
+          <span style="color:var(--text-dim);font-size:11px;margin-left:6px">${issue.comment_count || 0} comments</span>
+        </div>`;
+    if (issue.snapshot) {
+      html += `<div class="disc-snapshot">${esc(issue.snapshot)}</div>`;
+    }
+    html += `</div></div>`;
+
+    // Render children
+    const kids = children[num] || [];
+    if (kids.length) {
+      html += `<div class="disc-children">`;
+      for (const child of kids) {
+        html += renderNode(child, depth + 1);
+      }
+      html += '</div>';
+    }
+    return html;
+  }
+
+  // Find roots (issues with no parent, or whose parent is not in the set)
+  const roots = issues.filter(i => !i.parent || !byNumber[i.parent]);
+  let html = '';
+  for (const root of roots) {
+    html += renderNode(root, 0);
+  }
+  return html || '<p style="color:var(--text-dim);font-size:12px">Empty tree</p>';
+}
+
+document.getElementById('btn-watch').addEventListener('click', toggleWatch);
+document.getElementById('btn-discussions').addEventListener('click', () => {
+  discussionsPanelOpen = true;
+  fetchDiscussions();
+});
 
 // ── Startup: check if already initialized ───────────────────────
 

@@ -13,6 +13,7 @@ import yaml
 
 from .core.orchestrator import Orchestrator, OrchestraConfig
 from .core.task_queue import TaskStatus
+from .core.issue_tracker import WatchConfig
 
 
 def load_config(config_path: Path, project_dir: Path) -> OrchestraConfig:
@@ -36,6 +37,25 @@ def load_config(config_path: Path, project_dir: Path) -> OrchestraConfig:
         claude_cmd=claude.get("command", "claude"),
         max_turns=claude.get("max_turns", 50),
         model=claude.get("model"),
+    )
+
+
+def load_watch_config(config_path: Path) -> WatchConfig:
+    """Load watch configuration from orchestra.yaml."""
+    if config_path.exists():
+        with open(config_path) as f:
+            raw = yaml.safe_load(f) or {}
+    else:
+        raw = {}
+
+    watch = raw.get("watch", {})
+    return WatchConfig(
+        watch_labels=watch.get("labels", ["discuss"]),
+        poll_interval=watch.get("poll_interval", 120),
+        auto_submit=watch.get("auto_submit", False),
+        max_depth=watch.get("max_depth", 3),
+        max_issues_per_tree=watch.get("max_issues_per_tree", 15),
+        ready_label=watch.get("ready_label", "orchestra-ready"),
     )
 
 
@@ -208,6 +228,43 @@ async def cmd_review(args: argparse.Namespace) -> None:
     await orch.close()
 
 
+async def cmd_watch(args: argparse.Namespace) -> None:
+    """Watch GitHub issues and participate in discussions."""
+    project_dir = Path(args.project).resolve()
+    config_path = Path(args.config) if args.config else project_dir / "orchestra.yaml"
+    config = load_config(config_path, project_dir)
+    watch_config = load_watch_config(config_path)
+
+    # Override labels from CLI if provided
+    if args.labels:
+        watch_config.watch_labels = args.labels
+
+    orch = Orchestrator(config)
+    await orch.init()
+
+    async def log_event(event: str, data: dict) -> None:
+        print(f"[{event}] {json.dumps(data, default=str)}")
+
+    orch.on_event(log_event)
+
+    print(f"Watching issues with labels: {watch_config.watch_labels}")
+    print(f"Poll interval: {watch_config.poll_interval}s")
+    print(f"Auto-submit: {watch_config.auto_submit}")
+    print("Press Ctrl+C to stop.\n")
+
+    await orch.start_tracking(watch_config)
+
+    # Also run the orchestrator loop so that submitted discussions get implemented
+    try:
+        await orch.run_loop()
+    except KeyboardInterrupt:
+        orch.stop()
+        orch.stop_tracking()
+        print("\nStopped.")
+    finally:
+        await orch.close()
+
+
 async def cmd_web(args: argparse.Namespace) -> None:
     """Start the web dashboard — optionally with a pre-configured project."""
     import uvicorn
@@ -270,6 +327,10 @@ def main() -> None:
     # run
     sub.add_parser("run", help="Run the orchestrator loop")
 
+    # watch
+    p_watch = sub.add_parser("watch", help="Watch GitHub issues and participate in discussions")
+    p_watch.add_argument("--labels", nargs="+", help="Labels to watch (default: from config or 'discuss')")
+
     # web
     p_web = sub.add_parser("web", help="Start web dashboard + orchestrator")
     p_web.add_argument("--host", default="127.0.0.1", help="Host (default: 127.0.0.1)")
@@ -288,6 +349,7 @@ def main() -> None:
         "init": cmd_init,
         "submit": cmd_submit,
         "run": cmd_run,
+        "watch": cmd_watch,
         "web": cmd_web,
         "status": cmd_status,
         "review": cmd_review,

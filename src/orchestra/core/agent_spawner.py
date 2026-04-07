@@ -23,6 +23,7 @@ class AgentRole(str, Enum):
     HEAD_LEADER = "head_leader"
     FEATURE_REALIZER = "feature_realizer"
     FEATURE_INTERPRETER = "feature_interpreter"
+    DISCUSSION_ANALYST = "discussion_analyst"
 
 
 class AgentState(str, Enum):
