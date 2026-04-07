@@ -74,11 +74,11 @@ async function fetchProposalDetail(proposalId) {
 
 // ── Layout Constants ────────────────────────────────────────────
 
-const COMMIT_Y_STEP = 32;
-const COMMIT_X = 50;
-const IDEA_OFFSET_X = 160;   // horizontal distance from commit rail to idea node
-const FEAT_X = 440;          // X position of feature nodes — well to the right
-const FEAT_ROW_H = 64;       // vertical spacing between feature rows
+const COMMIT_Y_STEP = 28;
+const COMMIT_X_BASE = 50;    // leftmost lane X
+const LANE_WIDTH = 24;       // horizontal distance between branch lanes
+const IDEA_OFFSET_X = 120;   // horizontal distance from rightmost lane to idea node
+const FEAT_ROW_H = 52;       // vertical spacing between feature rows
 const PAD_TOP = 40;
 const PAD_BOTTOM = 60;
 const IDEA_R = 18;
@@ -94,39 +94,95 @@ function buildLayout() {
   const positions = {};
   let maxX = 500, maxY = 200;
 
-  // Assign colors to branches
+  // Assign colors to branches and determine lane assignments
   const branchColorMap = {};
+  const branchLaneMap = {};
   let colorIdx = 0;
+  let laneIdx = 0;
+
+  // First pass: collect all branch names, assign main/master to lane 0
+  const allBranches = new Set();
   for (const c of commits) {
-    for (const br of c.branches) {
-      if (!branchColorMap[br]) {
-        branchColorMap[br] = BRANCH_COLORS[colorIdx % BRANCH_COLORS.length];
-        colorIdx++;
+    for (const br of c.branches) allBranches.add(br);
+  }
+  // Assign main/master first
+  for (const br of ['main', 'master']) {
+    if (allBranches.has(br)) {
+      branchLaneMap[br] = 0;
+      branchColorMap[br] = BRANCH_COLORS[colorIdx % BRANCH_COLORS.length];
+      colorIdx++;
+      laneIdx = 1;
+      allBranches.delete(br);
+      break;
+    }
+  }
+  // Remaining branches get subsequent lanes
+  for (const br of allBranches) {
+    if (branchLaneMap[br] === undefined) {
+      branchLaneMap[br] = laneIdx++;
+      branchColorMap[br] = BRANCH_COLORS[colorIdx % BRANCH_COLORS.length];
+      colorIdx++;
+    }
+  }
+  const numLanes = Math.max(laneIdx, 1);
+  const defaultCommitColor = '#484f58';
+
+  // Helper: get lane X for a given lane index
+  function laneX(lane) {
+    return COMMIT_X_BASE + lane * LANE_WIDTH;
+  }
+
+  // Build a map from commit hash to its branch (for lane assignment)
+  // Strategy: assign each commit to the lane of its first branch ref,
+  // or inherit from its child commit if no branch ref
+  const commitsReversed = [...commits].reverse();
+  const commitLaneAssignment = {};
+
+  // First: assign commits that have branch refs
+  for (const c of commitsReversed) {
+    if (c.branches.length) {
+      commitLaneAssignment[c.hash] = branchLaneMap[c.branches[0]] ?? 0;
+    }
+  }
+
+  // Second pass (newest to oldest): propagate lane from child to parent
+  // Walk forward (newest first) since children know their lane
+  for (const c of commits) {
+    if (commitLaneAssignment[c.hash] === undefined) {
+      commitLaneAssignment[c.hash] = 0; // default to main lane
+    }
+    // Propagate to parents that don't have assignments yet
+    for (const ph of (c.parents || [])) {
+      if (commitLaneAssignment[ph] === undefined) {
+        commitLaneAssignment[ph] = commitLaneAssignment[c.hash];
       }
     }
   }
-  const defaultCommitColor = '#484f58';
 
-  // ── Commit rail (left column) ──
-  // git log returns newest first; reverse so oldest is at top, newest at bottom
-  // (time flows downward, like a standard git graph)
-  const commitsReversed = [...commits].reverse();
+  // ── Commit positions ──
   const commitPositions = [];
 
   commitsReversed.forEach((c, i) => {
     const y = PAD_TOP + i * COMMIT_Y_STEP;
+    const lane = commitLaneAssignment[c.hash] ?? 0;
+    const x = laneX(lane);
     const color = c.branches.length ? branchColorMap[c.branches[0]] : defaultCommitColor;
-    commitPositions.push({ ...c, x: COMMIT_X, y, color });
-    positions[`commit:${c.hash}`] = { x: COMMIT_X, y, type: 'commit', color, data: c };
+    const isMerge = (c.parents || []).length > 1;
+    commitPositions.push({ ...c, x, y, color, lane, isMerge });
+    positions[`commit:${c.hash}`] = { x, y, type: 'commit', color, data: c, lane, isMerge };
     maxY = Math.max(maxY, y + 40);
   });
 
   // ── Find HEAD commit Y — Ideas branch from here ──
-  // Use is_head flag from backend; fall back to the bottom commit
   const headCommit = commitPositions.find(c => c.is_head);
   const headY = headCommit ? headCommit.y
     : (commitPositions.length ? commitPositions[commitPositions.length - 1].y : PAD_TOP);
   let lastCommitY = headY;
+
+  // ── Dynamic FEAT_X based on number of lanes ──
+  const rightmostLaneX = laneX(numLanes - 1);
+  const ideaX = rightmostLaneX + IDEA_OFFSET_X;
+  const featX = ideaX + IDEA_R + 100; // dynamic feature X based on idea position
 
   // ── Requirements (Ideas) and their features ──
   const reqs = nodes.filter(n => n.type === 'requirement');
@@ -139,8 +195,6 @@ function buildLayout() {
     const rid = f.requirement_id || '__none__';
     (reqGroups[rid] = reqGroups[rid] || []).push(f);
   }
-
-  const ideaX = COMMIT_X + IDEA_OFFSET_X;
 
   // Running Y for feature placement — starts at the Idea Y
   let featCursorY = lastCommitY;
@@ -165,8 +219,8 @@ function buildLayout() {
     // Features: stacked downward starting from ideaY
     features.forEach((feat, row) => {
       const fy = ideaY + row * FEAT_ROW_H;
-      positions[feat.id] = { x: FEAT_X, y: fy, type: feat.type, data: feat, row };
-      maxX = Math.max(maxX, FEAT_X + 220);
+      positions[feat.id] = { x: featX, y: fy, type: feat.type, data: feat, row };
+      maxX = Math.max(maxX, featX + 220);
       maxY = Math.max(maxY, fy + 30);
     });
 
@@ -179,12 +233,13 @@ function buildLayout() {
   // Orphan features (no requirement)
   const orphans = reqGroups['__none__'] || [];
   orphans.forEach((feat, row) => {
-    const fy = blockY + row * FEAT_ROW_H;
-    positions[feat.id] = { x: FEAT_X, y: fy, type: feat.type, data: feat, row };
+    const fy = featCursorY + row * FEAT_ROW_H;
+    positions[feat.id] = { x: featX, y: fy, type: feat.type, data: feat, row };
     maxY = Math.max(maxY, fy + 30);
   });
 
-  return { positions, commitPositions, branchColorMap,
+  return { positions, commitPositions, branchColorMap, branchLaneMap,
+           numLanes, featX, ideaX,
            width: maxX + 80, height: maxY + PAD_BOTTOM };
 }
 
@@ -872,6 +927,11 @@ function connectSSE() {
       fetchGraph();
       fetchAgents();
     }
+
+    if (['discussion_discovered','discussion_commented','discussion_ready','discussion_status_changed'
+         ].includes(event) && discussionsPanelOpen) {
+      fetchDiscussions();
+    }
   });
 
   evtSource.onerror = () => {
@@ -1019,10 +1079,282 @@ function startDashboard() {
   initTooltip();
   fetchGraph();
   fetchAgents();
+  fetchTrackingStatus();
   setInterval(fetchAgents, 5000);
   setInterval(fetchGraph, 10000);
   connectSSE();
 }
+
+// ── Discussion Tracking ────────────────────────────────────────
+
+let watchActive = false;
+let discussionsPanelOpen = false;
+
+async function toggleWatch() {
+  try {
+    if (!watchActive) {
+      const res = await fetch('/api/tracking/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ labels: ['discuss'], poll_interval: 120, auto_submit: false }),
+      });
+      if (res.ok) watchActive = true;
+    } else {
+      const res = await fetch('/api/tracking/stop', { method: 'POST' });
+      if (res.ok) watchActive = false;
+    }
+  } catch (e) {
+    console.error('toggleWatch error:', e);
+  }
+  updateWatchBtn();
+}
+
+function updateWatchBtn() {
+  const btn = document.getElementById('btn-watch');
+  btn.textContent = `Watch: ${watchActive ? 'ON' : 'OFF'}`;
+  btn.style.borderColor = watchActive ? '#238636' : '';
+  btn.style.color = watchActive ? '#3fb950' : '';
+}
+
+async function fetchTrackingStatus() {
+  try {
+    const res = await fetch('/api/tracking/status');
+    if (res.ok) {
+      const data = await res.json();
+      watchActive = data.active;
+      updateWatchBtn();
+    }
+  } catch (e) {
+    // tracking endpoint may not exist yet
+  }
+}
+
+async function fetchDiscussions() {
+  const titleEl = document.getElementById('detail-title');
+  const contentEl = document.getElementById('detail-content');
+  titleEl.textContent = 'Discussions';
+  discussionsPanelOpen = true;
+
+  try {
+    const res = await fetch('/api/discussions');
+    if (!res.ok) throw new Error('Failed to fetch discussions');
+    const discussions = await res.json();
+    renderDiscussions(discussions);
+  } catch (e) {
+    contentEl.innerHTML = `<div class="disc-empty">
+      <p><b>Could not load discussions</b></p>
+      <p>${esc(e.message)}</p>
+    </div>`;
+  }
+}
+
+async function fetchDiscussionDetail(rootIssue) {
+  const titleEl = document.getElementById('detail-title');
+  const contentEl = document.getElementById('detail-content');
+  titleEl.textContent = `Discussion #${rootIssue}`;
+
+  try {
+    const res = await fetch(`/api/discussions/${encodeURIComponent(rootIssue)}`);
+    if (!res.ok) throw new Error('Failed to fetch discussion detail');
+    const tree = await res.json();
+    renderDiscussionDetail(tree);
+  } catch (e) {
+    contentEl.innerHTML = `<div class="disc-empty">
+      <p><b>Could not load discussion</b></p>
+      <p>${esc(e.message)}</p>
+    </div>`;
+  }
+}
+
+async function submitDiscussion(rootIssue) {
+  try {
+    const res = await fetch(`/api/discussions/${encodeURIComponent(rootIssue)}/submit`, {
+      method: 'POST',
+    });
+    if (res.ok) {
+      addLogEntry('discussion_submitted', `Discussion #${rootIssue} submitted for implementation`);
+      fetchDiscussionDetail(rootIssue);
+    }
+  } catch (e) {
+    console.error('submitDiscussion error:', e);
+  }
+}
+
+function renderDiscussions(discussions) {
+  const contentEl = document.getElementById('detail-content');
+
+  if (!discussions || !discussions.length) {
+    contentEl.innerHTML = `<div class="disc-empty">
+      <p><b>No tracked discussions</b></p>
+      <p>Enable Watch to start tracking issues with the "discuss" label.</p>
+    </div>`;
+    return;
+  }
+
+  let html = '<div class="disc-panel">';
+  for (const disc of discussions) {
+    const status = disc.status || 'watching';
+    const issueCount = disc.issue_count || disc.issues?.length || 0;
+    const rootNum = disc.root_issue || disc.id || '';
+    const title = disc.title || `Discussion #${rootNum}`;
+
+    html += `<div class="disc-tree-card">
+      <div class="disc-tree-header" onclick="fetchDiscussionDetail('${esc(String(rootNum))}')">
+        <span class="disc-issue-num">#${esc(String(rootNum))}</span>
+        <span class="disc-title">${esc(title)}</span>
+        <span class="disc-meta">${issueCount} issue${issueCount !== 1 ? 's' : ''}</span>
+        <span class="disc-status-badge ${esc(status)}">${esc(status)}</span>
+      </div>`;
+
+    // Show collapsed issue list preview
+    if (disc.issues && disc.issues.length) {
+      html += '<div class="disc-issue-list">';
+      for (const issue of disc.issues.slice(0, 5)) {
+        const isRoot = issue.is_root || issue.number === rootNum;
+        html += `<div class="disc-issue-item${isRoot ? ' root' : ''}">
+          <span class="disc-issue-num">#${issue.number || ''}</span>
+          <span class="disc-issue-title">${esc(issue.title || '')}</span>
+          <span class="disc-comment-count">${issue.comment_count || 0} comments</span>
+        </div>`;
+      }
+      if (disc.issues.length > 5) {
+        html += `<div style="font-size:11px;color:var(--text-dim);padding:4px 0">...and ${disc.issues.length - 5} more</div>`;
+      }
+      html += '</div>';
+    }
+
+    html += '</div>';
+  }
+  html += '</div>';
+  contentEl.innerHTML = html;
+}
+
+function renderDiscussionDetail(tree) {
+  const contentEl = document.getElementById('detail-content');
+  const status = tree.status || 'watching';
+  let html = '';
+
+  // Analysis summary
+  if (tree.analysis) {
+    const maturity = tree.analysis.maturity || 0;
+    const maturityPct = Math.round(maturity * 100);
+    const maturityColor = maturity > 0.7 ? 'var(--c-implemented)' : maturity > 0.4 ? 'var(--c-in_progress)' : 'var(--c-rejected)';
+    html += `<div class="disc-analysis">
+      <h4>Analyst Summary</h4>
+      <div class="markdown-body" style="border:none;padding:0;background:transparent">${marked.parse(tree.analysis.summary || 'No summary yet.')}</div>
+      <div class="disc-maturity">
+        <span>Maturity</span>
+        <div class="disc-maturity-bar">
+          <div class="disc-maturity-fill" style="width:${maturityPct}%;background:${maturityColor}"></div>
+        </div>
+        <span>${maturityPct}%</span>
+      </div>
+    </div>`;
+  }
+
+  // Status badge
+  html += `<div class="detail-section">
+    <h3>Status</h3>
+    <span class="disc-status-badge ${esc(status)}">${esc(status)}</span>
+  </div>`;
+
+  // Issue tree
+  html += '<div class="detail-section disc-tree-detail"><h3>Issue Tree</h3>';
+  if (tree.issues && tree.issues.length) {
+    html += renderIssueTree(tree.issues, tree.root_issue);
+  } else {
+    html += '<p style="color:var(--text-dim);font-size:12px">No issues found</p>';
+  }
+  html += '</div>';
+
+  // Recent comments
+  if (tree.recent_comments && tree.recent_comments.length) {
+    html += '<div class="detail-section"><h3>Recent Comments</h3>';
+    for (const comment of tree.recent_comments) {
+      html += `<div class="disc-comment">
+        <div class="disc-comment-author">
+          ${esc(comment.author || 'unknown')}
+          <span class="disc-comment-time">${comment.created_at || ''}</span>
+        </div>
+        <div>${marked.parse(comment.body || '')}</div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+
+  // Submit button for ready discussions
+  if (status === 'ready') {
+    const rootIssue = tree.root_issue || '';
+    html += `<button class="btn btn-primary disc-submit-btn" onclick="submitDiscussion('${esc(String(rootIssue))}')">
+      Submit for Implementation
+    </button>`;
+  }
+
+  // Back link
+  html += `<div style="margin-top:16px">
+    <button class="btn" onclick="fetchDiscussions()" style="font-size:11px">Back to all discussions</button>
+  </div>`;
+
+  contentEl.innerHTML = html;
+}
+
+function renderIssueTree(issues, rootIssue) {
+  // Build a parent->children map
+  const byNumber = {};
+  const children = {};
+  for (const issue of issues) {
+    byNumber[issue.number] = issue;
+    const parent = issue.parent || null;
+    if (!children[parent]) children[parent] = [];
+    children[parent].push(issue);
+  }
+
+  function renderNode(issue, depth) {
+    const num = issue.number || '';
+    const isRoot = issue.is_root || num === rootIssue;
+    const indent = depth * 20;
+    let html = `<div class="disc-issue-node" style="padding-left:${indent}px">
+      <div class="disc-tree-line">
+        <div class="disc-dot" style="background:${isRoot ? 'var(--c-requirement)' : 'var(--accent)'}"></div>
+        <div class="disc-connector"></div>
+      </div>
+      <div style="flex:1">
+        <div>
+          <span style="font-family:monospace;color:var(--accent)">#${esc(String(num))}</span>
+          <span style="margin-left:6px">${esc(issue.title || '')}</span>
+          <span style="color:var(--text-dim);font-size:11px;margin-left:6px">${issue.comment_count || 0} comments</span>
+        </div>`;
+    if (issue.snapshot) {
+      html += `<div class="disc-snapshot">${esc(issue.snapshot)}</div>`;
+    }
+    html += `</div></div>`;
+
+    // Render children
+    const kids = children[num] || [];
+    if (kids.length) {
+      html += `<div class="disc-children">`;
+      for (const child of kids) {
+        html += renderNode(child, depth + 1);
+      }
+      html += '</div>';
+    }
+    return html;
+  }
+
+  // Find roots (issues with no parent, or whose parent is not in the set)
+  const roots = issues.filter(i => !i.parent || !byNumber[i.parent]);
+  let html = '';
+  for (const root of roots) {
+    html += renderNode(root, 0);
+  }
+  return html || '<p style="color:var(--text-dim);font-size:12px">Empty tree</p>';
+}
+
+document.getElementById('btn-watch').addEventListener('click', toggleWatch);
+document.getElementById('btn-discussions').addEventListener('click', () => {
+  discussionsPanelOpen = true;
+  fetchDiscussions();
+});
 
 // ── Startup: check if already initialized ───────────────────────
 
