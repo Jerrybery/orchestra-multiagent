@@ -550,6 +550,81 @@ footer {
 .setup-info.info-ok { border-color: var(--c-done); color: var(--c-done); }
 .setup-info.info-warn { border-color: var(--c-in_progress); color: var(--c-in_progress); }
 
+/* ── Watch Tag Editor ───────────────────────────────────── */
+.watch-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.tag-editor {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 6px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  width: 280px;
+  z-index: 50;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.tag-editor.hidden { display: none; }
+.tag-editor-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+.tag-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+  min-height: 24px;
+}
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: rgba(88,166,255,0.12);
+  border: 1px solid rgba(88,166,255,0.3);
+  color: var(--accent);
+}
+.tag-pill-remove {
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.6;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+}
+.tag-pill-remove:hover { opacity: 1; color: var(--c-rejected); }
+.tag-input-row {
+  display: flex;
+  gap: 6px;
+}
+.tag-input-row input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.tag-input-row input:focus { outline: none; border-color: var(--accent); }
+.tag-input-row .btn { padding: 4px 10px; font-size: 11px; }
+
 /* ── Discussion Panel ───────────────────────────────────── */
 .disc-panel {
   display: flex;

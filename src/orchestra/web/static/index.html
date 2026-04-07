@@ -44,7 +44,18 @@
   <div class="header-right">
     <div id="agent-status" class="agent-bar"></div>
     <button id="btn-auto-accept" class="btn" title="Toggle auto-accept after FI">Auto-Accept: OFF</button>
-    <button id="btn-watch" class="btn" title="Toggle issue watching">Watch: OFF</button>
+    <div class="watch-group">
+      <button id="btn-watch" class="btn" title="Toggle issue watching">Watch: OFF</button>
+      <button id="btn-watch-tags" class="btn-icon" title="Edit watch labels">&#9881;</button>
+      <div id="tag-editor" class="tag-editor hidden">
+        <div class="tag-editor-header">Watch Labels</div>
+        <div id="tag-pills" class="tag-pills"></div>
+        <div class="tag-input-row">
+          <input type="text" id="tag-input" placeholder="Add label..." />
+          <button class="btn" onclick="addWatchTag()">Add</button>
+        </div>
+      </div>
+    </div>
     <button id="btn-discussions" class="btn" title="View tracked discussions">Discussions</button>
     <button id="btn-switch" class="btn" title="Switch project">Switch Project</button>
     <button id="btn-submit" class="btn btn-primary">+ Submit Requirement</button>
