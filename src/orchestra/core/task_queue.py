@@ -54,6 +54,30 @@ CREATE TABLE IF NOT EXISTS events (
     data TEXT NOT NULL DEFAULT '{}',
     created_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS discussions (
+    root_issue INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'watching',
+    last_analysis TEXT DEFAULT '',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS discussion_issues (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    root_issue INTEGER NOT NULL,
+    issue_number INTEGER NOT NULL UNIQUE,
+    parent_issue INTEGER,
+    title TEXT NOT NULL,
+    body TEXT DEFAULT '',
+    last_comment_id INTEGER DEFAULT 0,
+    snapshot TEXT DEFAULT '',
+    created_at REAL NOT NULL,
+    FOREIGN KEY (root_issue) REFERENCES discussions(root_issue)
+);
+
+CREATE INDEX IF NOT EXISTS idx_disc_issues_root ON discussion_issues(root_issue);
 """
 
 
@@ -97,6 +121,30 @@ class Proposal:
     features: list[dict]  # [{"id": "feat-001", "title": ..., "depends_on": [...], "priority": N}, ...]
     summary: str = ""
     status: str = "pending"  # pending | approved | rejected
+    created_at: float = 0.0
+
+
+@dataclass
+class Discussion:
+    """A tracked discussion tree rooted at a GitHub issue."""
+    root_issue: int
+    title: str
+    status: str = "watching"  # watching | converging | ready | submitted
+    last_analysis: str = ""
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+
+@dataclass
+class DiscussionIssue:
+    """A single issue node in a discussion tree."""
+    root_issue: int
+    issue_number: int
+    title: str
+    parent_issue: Optional[int] = None
+    body: str = ""
+    last_comment_id: int = 0
+    snapshot: str = ""
     created_at: float = 0.0
 
 
@@ -319,3 +367,88 @@ class TaskQueue:
             "SELECT status, COUNT(*) as cnt FROM tasks GROUP BY status"
         ) as cur:
             return {row["status"]: row["cnt"] async for row in cur}
+
+    # ── Discussions ─────────────────────────────────────────
+
+    async def upsert_discussion(self, root_issue: int, title: str,
+                                 status: str = "watching") -> Discussion:
+        now = time.time()
+        await self._db.execute(
+            """INSERT INTO discussions (root_issue, title, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(root_issue) DO UPDATE SET
+                 title = excluded.title, updated_at = excluded.updated_at""",
+            (root_issue, title, status, now, now),
+        )
+        await self._db.commit()
+        return Discussion(root_issue=root_issue, title=title, status=status,
+                          created_at=now, updated_at=now)
+
+    async def get_discussion(self, root_issue: int) -> Optional[Discussion]:
+        async with self._db.execute(
+            "SELECT * FROM discussions WHERE root_issue = ?", (root_issue,)
+        ) as cur:
+            row = await cur.fetchone()
+            return Discussion(**dict(row)) if row else None
+
+    async def get_discussions(self, status: Optional[str] = None) -> list[Discussion]:
+        if status:
+            sql = "SELECT * FROM discussions WHERE status = ? ORDER BY updated_at DESC"
+            params = (status,)
+        else:
+            sql = "SELECT * FROM discussions ORDER BY updated_at DESC"
+            params = ()
+        async with self._db.execute(sql, params) as cur:
+            return [Discussion(**dict(row)) async for row in cur]
+
+    async def update_discussion(self, root_issue: int, **kwargs) -> None:
+        sets = ["updated_at = ?"]
+        params: list = [time.time()]
+        for col in ("status", "last_analysis", "title"):
+            if col in kwargs:
+                sets.append(f"{col} = ?")
+                params.append(kwargs[col])
+        params.append(root_issue)
+        await self._db.execute(
+            f"UPDATE discussions SET {', '.join(sets)} WHERE root_issue = ?", params
+        )
+        await self._db.commit()
+
+    async def upsert_discussion_issue(self, root_issue: int, issue_number: int,
+                                       title: str, parent_issue: Optional[int] = None,
+                                       body: str = "") -> DiscussionIssue:
+        now = time.time()
+        await self._db.execute(
+            """INSERT INTO discussion_issues
+               (root_issue, issue_number, parent_issue, title, body, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(issue_number) DO UPDATE SET
+                 title = excluded.title, body = excluded.body""",
+            (root_issue, issue_number, parent_issue, title, body, now),
+        )
+        await self._db.commit()
+        return DiscussionIssue(root_issue=root_issue, issue_number=issue_number,
+                                title=title, parent_issue=parent_issue,
+                                body=body, created_at=now)
+
+    async def get_discussion_issues(self, root_issue: int) -> list[DiscussionIssue]:
+        async with self._db.execute(
+            "SELECT * FROM discussion_issues WHERE root_issue = ? ORDER BY issue_number",
+            (root_issue,),
+        ) as cur:
+            return [DiscussionIssue(**dict(row)) async for row in cur]
+
+    async def update_discussion_issue(self, issue_number: int, **kwargs) -> None:
+        sets = []
+        params: list = []
+        for col in ("last_comment_id", "snapshot", "body"):
+            if col in kwargs:
+                sets.append(f"{col} = ?")
+                params.append(kwargs[col])
+        if not sets:
+            return
+        params.append(issue_number)
+        await self._db.execute(
+            f"UPDATE discussion_issues SET {', '.join(sets)} WHERE issue_number = ?", params
+        )
+        await self._db.commit()

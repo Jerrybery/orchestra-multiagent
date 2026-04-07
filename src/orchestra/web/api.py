@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from ..core.orchestrator import Orchestrator, OrchestraConfig
 from ..core.task_queue import TaskStatus
+from ..core.issue_tracker import WatchConfig
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -257,6 +258,29 @@ async def get_graph():
             ]}
 
 
+@app.get("/api/issues")
+async def get_issues(state: str = "open", label: Optional[str] = None):
+    """Fetch GitHub issues for the connected project."""
+    orch = _orch()
+    issues = await orch.github.list_issues(state=state, labels=label or "")
+    # Normalize for frontend
+    return [
+        {
+            "number": i.get("number"),
+            "title": i.get("title", ""),
+            "url": i.get("url", ""),
+            "state": i.get("state", "open"),
+            "labels": [lb.get("name", "") for lb in i.get("labels", [])],
+            "author": i.get("author", {}).get("login", "unknown"),
+            "comment_count": len(i.get("comments", [])),
+            "created_at": i.get("createdAt", ""),
+            "updated_at": i.get("updatedAt", ""),
+            "body_preview": (i.get("body") or "")[:200],
+        }
+        for i in issues
+    ]
+
+
 @app.get("/api/branches")
 async def get_branches():
     orch = _orch()
@@ -438,6 +462,123 @@ async def review_task(task_id: str, action: ReviewAction):
         return {"status": "rejected"}
     else:
         raise HTTPException(400, f"Unknown action: {action.action}")
+
+
+# ── Discussion Tracking ─────────────────────────────────────
+
+class WatchRequest(BaseModel):
+    labels: list[str] = ["discuss"]
+    poll_interval: int = 120
+    auto_submit: bool = False
+
+
+@app.post("/api/tracking/start")
+async def start_tracking(req: WatchRequest):
+    """Start watching GitHub issues for discussions."""
+    orch = _orch()
+    config = WatchConfig(
+        watch_labels=req.labels,
+        poll_interval=req.poll_interval,
+        auto_submit=req.auto_submit,
+    )
+    await orch.start_tracking(config)
+    return {"status": "tracking", "labels": req.labels}
+
+
+@app.post("/api/tracking/stop")
+async def stop_tracking():
+    """Stop the issue tracker."""
+    orch = _orch()
+    orch.stop_tracking()
+    return {"status": "stopped"}
+
+
+@app.get("/api/tracking/status")
+async def tracking_status():
+    """Get current tracking status."""
+    orch = _orch()
+    if not orch.tracker:
+        return {"active": False}
+    return {
+        "active": True,
+        "labels": orch.tracker.config.watch_labels,
+        "tree_count": len(orch.tracker.get_trees()),
+    }
+
+
+@app.get("/api/discussions")
+async def get_discussions():
+    """Get all tracked discussion trees."""
+    orch = _orch()
+    if not orch.tracker:
+        return []
+    trees = orch.tracker.get_trees()
+    return [
+        {
+            "root_issue": tree.root_issue,
+            "title": tree.title,
+            "status": tree.status,
+            "issue_count": len(tree.nodes),
+            "issues": [
+                {
+                    "number": node.issue_number,
+                    "title": node.title,
+                    "parent": node.parent_issue,
+                    "comment_count": len(node.comments),
+                    "snapshot": node.snapshot,
+                }
+                for node in tree.nodes.values()
+            ],
+            "last_analysis": tree.last_analysis[:500] if tree.last_analysis else "",
+        }
+        for tree in trees.values()
+    ]
+
+
+@app.get("/api/discussions/{root_issue}")
+async def get_discussion(root_issue: int):
+    """Get a specific discussion tree with full details."""
+    orch = _orch()
+    if not orch.tracker:
+        raise HTTPException(404, "Tracker not running")
+    tree = orch.tracker.get_tree(root_issue)
+    if not tree:
+        raise HTTPException(404, f"Discussion #{root_issue} not found")
+    return {
+        "root_issue": tree.root_issue,
+        "title": tree.title,
+        "status": tree.status,
+        "last_analysis": tree.last_analysis,
+        "issues": [
+            {
+                "number": node.issue_number,
+                "title": node.title,
+                "parent": node.parent_issue,
+                "body": node.body[:2000],
+                "comment_count": len(node.comments),
+                "snapshot": node.snapshot,
+                "recent_comments": [
+                    {
+                        "author": c.get("author", {}).get("login", "unknown"),
+                        "body": c.get("body", "")[:500],
+                    }
+                    for c in node.comments[-5:]  # last 5 comments
+                ],
+            }
+            for node in tree.nodes.values()
+        ],
+    }
+
+
+@app.post("/api/discussions/{root_issue}/submit")
+async def submit_discussion(root_issue: int):
+    """Manually submit a ready discussion for implementation."""
+    orch = _orch()
+    try:
+        proposal_id = await orch.submit_discussion(root_issue)
+        return {"status": "submitted", "proposal_id": proposal_id}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/events/stream")
