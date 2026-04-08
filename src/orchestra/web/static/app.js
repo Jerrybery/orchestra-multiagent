@@ -969,8 +969,8 @@ document.querySelectorAll('.log-tab').forEach(tab => {
 function switchTab(tabName) {
   document.querySelectorAll('.log-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
   document.querySelectorAll('.log-tab-content').forEach(c => c.classList.toggle('active', c.id === `tab-${tabName}`));
-  // Refresh issues when switching to the issues tab
   if (tabName === 'issues' && !issuesCache.length) fetchIssues();
+  if (tabName === 'drafts') fetchDrafts();
 }
 
 // ── SSE Event stream ────────────────────────────────────────────
@@ -998,6 +998,10 @@ function connectSSE() {
     if (['discussion_discovered','discussion_commented','discussion_ready','discussion_status_changed'
          ].includes(event) && discussionsPanelOpen) {
       fetchDiscussions();
+    }
+
+    if (event === 'draft_comment_created') {
+      fetchDrafts();
     }
   });
 
@@ -1148,8 +1152,10 @@ function startDashboard() {
   fetchAgents();
   fetchTrackingStatus();
   fetchIssues();
+  fetchDrafts();
   setInterval(fetchAgents, 5000);
   setInterval(fetchGraph, 10000);
+  setInterval(fetchDrafts, 10000);
   setInterval(() => { if (document.querySelector('.log-tab[data-tab="issues"].active')) fetchIssues(); }, 30000);
   connectSSE();
 }
@@ -1318,6 +1324,114 @@ document.querySelectorAll('.issues-filter').forEach(btn => {
   });
 });
 
+// ── Draft Comments ─────────────────────────────────────────────
+
+let draftsCache = [];
+
+async function fetchDrafts() {
+  try {
+    const res = await fetch('/api/drafts?status=pending');
+    if (!res.ok) return;
+    const fresh = await res.json();
+    if (JSON.stringify(fresh) !== JSON.stringify(draftsCache)) {
+      draftsCache = fresh;
+      renderDrafts(draftsCache);
+    }
+    // Update badge
+    const badge = document.getElementById('drafts-count');
+    if (badge) {
+      if (draftsCache.length > 0) {
+        badge.textContent = draftsCache.length;
+        badge.classList.remove('hidden');
+      } else {
+        badge.classList.add('hidden');
+      }
+    }
+  } catch (e) {}
+}
+
+function renderDrafts(drafts) {
+  const list = document.getElementById('drafts-list');
+  if (!list) return;
+
+  if (!drafts.length) {
+    list.innerHTML = '<div class="issues-empty">没有待审核的评论草稿</div>';
+    return;
+  }
+
+  let html = '';
+  for (const d of drafts) {
+    html += `<div class="draft-card" id="draft-${d.id}">
+      <div class="draft-card-header">
+        <span class="draft-source ${esc(d.source)}">${d.source === 'head_leader' ? 'Head Leader' : 'Analyst'}</span>
+        <span style="color:var(--accent);font-family:monospace">#${d.target_issue}</span>
+        <span style="color:var(--text-dim)">→ Tree #${d.root_issue}</span>
+      </div>
+      <div class="draft-body" id="draft-body-${d.id}">${marked.parse(d.body)}</div>
+      <div class="draft-actions">
+        <button class="btn btn-primary" onclick="reviewDraft(${d.id}, 'approve')">发布到 GitHub</button>
+        <button class="btn" onclick="editDraft(${d.id})">编辑</button>
+        <button class="btn btn-reject" onclick="reviewDraft(${d.id}, 'reject')">丢弃</button>
+      </div>
+    </div>`;
+  }
+  list.innerHTML = html;
+}
+
+async function reviewDraft(draftId, action) {
+  const body = {};
+  body.action = action;
+  if (action === 'approve') {
+    // Check if user edited the draft
+    const editArea = document.getElementById(`draft-edit-${draftId}`);
+    if (editArea) {
+      // Save edit first, then approve
+      await fetch(`/api/drafts/${draftId}/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'edit', body: editArea.value }),
+      });
+    }
+  }
+  await fetch(`/api/drafts/${draftId}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  addLogEntry('draft_' + action, `Draft #${draftId} ${action === 'approve' ? '已发布' : '已丢弃'}`);
+  fetchDrafts();
+}
+
+function editDraft(draftId) {
+  const draft = draftsCache.find(d => d.id === draftId);
+  if (!draft) return;
+  const card = document.getElementById(`draft-${draftId}`);
+  if (!card) return;
+  const bodyDiv = document.getElementById(`draft-body-${draftId}`);
+  if (!bodyDiv) return;
+
+  // Replace body display with editable textarea
+  bodyDiv.outerHTML = `<textarea class="draft-edit-area" id="draft-edit-${draftId}">${esc(draft.body)}</textarea>`;
+
+  // Update actions to save
+  const actions = card.querySelector('.draft-actions');
+  actions.innerHTML = `
+    <button class="btn btn-primary" onclick="saveDraftEdit(${draftId})">保存</button>
+    <button class="btn" onclick="fetchDrafts()">取消</button>
+  `;
+}
+
+async function saveDraftEdit(draftId) {
+  const textarea = document.getElementById(`draft-edit-${draftId}`);
+  if (!textarea) return;
+  await fetch(`/api/drafts/${draftId}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'edit', body: textarea.value }),
+  });
+  fetchDrafts();
+}
+
 // ── Discussion Tracking ────────────────────────────────────────
 
 let watchActive = false;
@@ -1452,6 +1566,12 @@ async function addFocusIssue() {
   input.value = '';
   renderFocusPills();
   await saveFocusIssues();
+
+  // Immediately trigger analysis on this issue
+  try {
+    await fetch(`/api/discussions/${num}/analyze`, { method: 'POST' });
+    addLogEntry('focus_analyze', `Started analyzing issue #${num}`);
+  } catch (e) {}
 }
 
 async function removeFocusIssue(num) {

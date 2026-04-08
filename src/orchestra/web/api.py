@@ -640,6 +640,69 @@ async def submit_discussion(root_issue: int):
         raise HTTPException(400, str(e))
 
 
+@app.post("/api/discussions/{issue_number}/analyze")
+async def analyze_issue_now(issue_number: int):
+    """Immediately analyze an issue (used when user adds a focus issue)."""
+    orch = _orch()
+    if not orch.tracker:
+        raise HTTPException(400, "Tracker not running")
+    asyncio.create_task(orch.tracker.analyze_now(issue_number))
+    return {"status": "analyzing", "issue_number": issue_number}
+
+
+# ── Draft Comments ─────────────────────────────────────────
+
+@app.get("/api/drafts")
+async def get_drafts(status: str = "pending"):
+    """Get draft comments awaiting review."""
+    orch = _orch()
+    drafts = await orch.task_queue.get_draft_comments(status)
+    return [
+        {
+            "id": d.id,
+            "root_issue": d.root_issue,
+            "target_issue": d.target_issue,
+            "body": d.body,
+            "source": d.source,
+            "status": d.status,
+            "created_at": d.created_at,
+        }
+        for d in drafts
+    ]
+
+
+class DraftAction(BaseModel):
+    action: str  # approve | reject | edit
+    body: str = ""  # new body if editing
+
+
+@app.post("/api/drafts/{draft_id}/review")
+async def review_draft(draft_id: int, action: DraftAction):
+    """Review a draft comment: approve (post to GitHub), reject, or edit."""
+    orch = _orch()
+    draft = await orch.task_queue.get_draft_comment(draft_id)
+    if not draft:
+        raise HTTPException(404, f"Draft {draft_id} not found")
+    if draft.status != "pending":
+        raise HTTPException(400, f"Draft is already {draft.status}")
+
+    if action.action == "approve":
+        if not orch.tracker:
+            raise HTTPException(400, "Tracker not running")
+        ok = await orch.tracker.post_approved_draft(draft_id)
+        return {"status": "posted" if ok else "failed"}
+    elif action.action == "reject":
+        await orch.task_queue.update_draft_status(draft_id, "rejected")
+        return {"status": "rejected"}
+    elif action.action == "edit":
+        if not action.body.strip():
+            raise HTTPException(400, "Body is required for edit")
+        await orch.task_queue.update_draft_body(draft_id, action.body)
+        return {"status": "edited", "body": action.body}
+    else:
+        raise HTTPException(400, f"Unknown action: {action.action}")
+
+
 @app.get("/api/events/stream")
 async def event_stream():
     """SSE endpoint — streams new events to the browser."""

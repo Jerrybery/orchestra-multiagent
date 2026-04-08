@@ -897,6 +897,77 @@ footer {
   font-size: 12px;
 }
 
+/* ── Drafts Tab ─────────────────────────────────────────── */
+.drafts-badge {
+  display: inline-block;
+  min-width: 16px;
+  height: 16px;
+  line-height: 16px;
+  border-radius: 8px;
+  background: var(--c-review);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  margin-left: 4px;
+  padding: 0 4px;
+}
+.drafts-badge.hidden { display: none; }
+
+.draft-card {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  margin-bottom: 6px;
+}
+.draft-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.draft-source {
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.draft-source.analyst { background: rgba(88,166,255,0.15); color: var(--accent); }
+.draft-source.head_leader { background: rgba(218,112,214,0.15); color: var(--c-requirement); }
+
+.draft-body {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 120px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+}
+.draft-actions {
+  display: flex;
+  gap: 6px;
+}
+.draft-actions .btn { font-size: 11px; padding: 3px 10px; }
+
+.draft-edit-area {
+  width: 100%;
+  min-height: 60px;
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 8px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+  margin-bottom: 6px;
+}
+
 /* ── Issues Tab ─────────────────────────────────────────── */
 .issues-toolbar {
   display: flex;
