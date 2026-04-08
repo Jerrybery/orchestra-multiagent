@@ -646,7 +646,14 @@ async def analyze_issue_now(issue_number: int):
     orch = _orch()
     if not orch.tracker:
         raise HTTPException(400, "Tracker not running")
-    asyncio.create_task(orch.tracker.analyze_now(issue_number))
+    async def _run_analyze():
+        try:
+            await orch.tracker.analyze_now(issue_number)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("analyze_now failed for #%d", issue_number)
+
+    asyncio.create_task(_run_analyze())
     return {"status": "analyzing", "issue_number": issue_number}
 
 

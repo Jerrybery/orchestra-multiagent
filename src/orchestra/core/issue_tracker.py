@@ -154,29 +154,26 @@ class IssueTracker:
 
     async def _poll_cycle(self):
         # 1. Discover new root issues
-        await self._discover_roots()
+        new_roots = await self._discover_roots()
 
         # 2. For each active tree: crawl children, fetch new comments, analyze
         for root_num, tree in list(self._trees.items()):
             if tree.status == "submitted":
                 continue
 
-            old_comment_counts = {
-                n: len(node.comments) for n, node in tree.nodes.items()
-            }
-
             await self._crawl_children(tree)
             has_new = await self._fetch_new_comments(tree)
 
-            if has_new:
+            # Analyze if there are new comments OR if this is a freshly discovered tree
+            if has_new or root_num in new_roots or not tree.last_analysis:
                 await self._analyze_tree(tree)
 
     # ── Phase 1: Discover root issues ──────────────────────
 
-    async def _register_root(self, num: int, title: str, body: str = ""):
-        """Register a single issue as a discussion tree root."""
+    async def _register_root(self, num: int, title: str, body: str = "") -> bool:
+        """Register a single issue as a discussion tree root. Returns True if new."""
         if num in self._trees:
-            return
+            return False
         tree = DiscussionTree(root_issue=num, title=title)
         tree.nodes[num] = TrackedNode(
             issue_number=num, title=title, body=body,
@@ -190,15 +187,20 @@ class IssueTracker:
         await self._emit("discussion_discovered", {
             "issue_number": num, "title": title,
         })
+        return True
 
-    async def _discover_roots(self):
+    async def _discover_roots(self) -> set[int]:
+        """Discover root issues. Returns set of newly discovered root issue numbers."""
+        new_roots: set[int] = set()
+
         # By label
         for label in self.config.watch_labels:
             issues = await self.github.list_issues_by_label(label)
             for issue in issues:
-                await self._register_root(
+                if await self._register_root(
                     issue["number"], issue["title"], issue.get("body", ""),
-                )
+                ):
+                    new_roots.add(issue["number"])
 
         # By explicit focus issue numbers
         for num in self.config.focus_issues:
@@ -206,9 +208,12 @@ class IssueTracker:
                 continue
             issue = await self.github.get_issue(num)
             if issue:
-                await self._register_root(
+                if await self._register_root(
                     num, issue["title"], issue.get("body", ""),
-                )
+                ):
+                    new_roots.add(num)
+
+        return new_roots
 
     # ── Phase 2: Crawl child issues ────────────────────────
 
@@ -291,13 +296,13 @@ class IssueTracker:
             # Find comments newer than last seen
             new_comments = []
             for c in comments:
-                cid = c.get("id", 0)
+                cid = int(c.get("id", 0) or 0)
                 if cid > node.last_comment_id:
                     new_comments.append(c)
 
             if new_comments:
                 node.comments.extend(new_comments)
-                node.last_comment_id = max(c.get("id", 0) for c in new_comments)
+                node.last_comment_id = max(int(c.get("id", 0) or 0) for c in new_comments)
                 has_new = True
 
                 # Persist

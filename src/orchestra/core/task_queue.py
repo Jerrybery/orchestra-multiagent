@@ -151,9 +151,10 @@ class Discussion:
 @dataclass
 class DiscussionIssue:
     """A single issue node in a discussion tree."""
-    root_issue: int
-    issue_number: int
-    title: str
+    id: int = 0
+    root_issue: int = 0
+    issue_number: int = 0
+    title: str = ""
     parent_issue: Optional[int] = None
     body: str = ""
     last_comment_id: int = 0
