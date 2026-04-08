@@ -95,6 +95,33 @@ main {
   overflow: hidden;
 }
 
+/* ── Resizers ────────────────────────────────────────── */
+.resizer {
+  flex-shrink: 0;
+  background: transparent;
+  z-index: 10;
+}
+.resizer-h {
+  width: 5px;
+  cursor: col-resize;
+  border-left: 1px solid var(--border);
+}
+.resizer-h:hover, .resizer-h.active {
+  background: var(--accent);
+  opacity: 0.3;
+}
+.resizer-v {
+  height: 5px;
+  cursor: row-resize;
+  border-top: 1px solid var(--border);
+}
+.resizer-v:hover, .resizer-v.active {
+  background: var(--accent);
+  opacity: 0.3;
+}
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing-v { cursor: row-resize; user-select: none; }
+
 .panel {
   display: flex;
   flex-direction: column;
@@ -624,6 +651,23 @@ footer {
 }
 .tag-input-row input:focus { outline: none; border-color: var(--accent); }
 .tag-input-row .btn { padding: 4px 10px; font-size: 11px; }
+.tag-editor-divider {
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+.tag-pill.focus {
+  background: rgba(63,185,80,0.12);
+  border-color: rgba(63,185,80,0.3);
+  color: var(--c-implemented);
+}
+.tag-input-row input[type="number"] {
+  -moz-appearance: textfield;
+}
+.tag-input-row input[type="number"]::-webkit-inner-spin-button,
+.tag-input-row input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
 
 /* ── Discussion Panel ───────────────────────────────────── */
 .disc-panel {
