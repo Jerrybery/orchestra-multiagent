@@ -1535,6 +1535,8 @@ async function saveWatchLabels() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ labels: watchLabels }),
     });
+    // Immediately refresh issues list with new labels
+    fetchIssues();
   } catch (e) {
     console.error('saveWatchLabels error:', e);
   }

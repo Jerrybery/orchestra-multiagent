@@ -293,19 +293,14 @@ class IssueTracker:
             if not comments:
                 continue
 
-            # Find comments newer than last seen
-            new_comments = []
-            for c in comments:
-                cid = int(c.get("id", 0) or 0)
-                if cid > node.last_comment_id:
-                    new_comments.append(c)
-
-            if new_comments:
+            # Use count-based tracking — last_comment_id stores the count we last saw
+            old_count = node.last_comment_id  # repurposed as last seen count
+            if len(comments) > old_count:
+                new_comments = comments[old_count:]
                 node.comments.extend(new_comments)
-                node.last_comment_id = max(int(c.get("id", 0) or 0) for c in new_comments)
+                node.last_comment_id = len(comments)
                 has_new = True
 
-                # Persist
                 await self.task_queue.update_discussion_issue(
                     num, last_comment_id=node.last_comment_id,
                 )
@@ -430,7 +425,29 @@ class IssueTracker:
         parsed = self._parse_result(result.stdout)
 
         if not parsed:
-            log.warning("DiscussionAnalyst no structured output for tree #%d", tree.root_issue)
+            # Agent didn't output structured JSON — treat entire output as a comment draft
+            text = result.stdout.strip()
+            if text:
+                log.info("DA produced unstructured output for #%d, saving as draft", tree.root_issue)
+                await self.task_queue.add_draft_comment(
+                    root_issue=tree.root_issue,
+                    target_issue=tree.root_issue,
+                    body=text,
+                    source="analyst",
+                )
+                tree.last_analysis = text[:500]
+                await self.task_queue.update_discussion(
+                    tree.root_issue, last_analysis=tree.last_analysis,
+                )
+                await self._emit("draft_comment_created", {
+                    "draft_id": 0,
+                    "root": tree.root_issue,
+                    "target_issue": tree.root_issue,
+                    "source": "analyst",
+                    "body_preview": text[:200],
+                })
+            else:
+                log.warning("DiscussionAnalyst no output for tree #%d", tree.root_issue)
             return
 
         await self._handle_result(tree, parsed)
