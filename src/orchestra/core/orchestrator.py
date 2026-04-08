@@ -67,6 +67,7 @@ class Orchestrator:
         self._on_event: Optional[Callable[[str, dict], Awaitable[None]]] = None
         self._stop = False
         self.tracker: Optional[IssueTracker] = None
+        self._tracker_task: Optional[asyncio.Task] = None
 
     async def init(self) -> None:
         """Initialize all subsystems."""
@@ -114,8 +115,17 @@ class Orchestrator:
             on_event=self._on_event,
             on_ready=self._on_discussion_ready,
         )
-        asyncio.create_task(self.tracker.run())
+        self._tracker_task = asyncio.create_task(self.tracker.run())
+        self._tracker_task.add_done_callback(self._on_tracker_done)
         await self._emit("tracking_started", {"labels": watch_config.watch_labels})
+
+    def _on_tracker_done(self, task: asyncio.Task) -> None:
+        """Log tracker crashes instead of silently dropping them."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            log.error("IssueTracker crashed: %s", exc, exc_info=exc)
 
     def stop_tracking(self) -> None:
         """Stop the issue tracker."""

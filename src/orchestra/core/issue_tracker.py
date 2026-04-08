@@ -99,6 +99,8 @@ class IssueTracker:
         self._on_ready = on_ready
         self._trees: dict[int, DiscussionTree] = {}
         self._stop = False
+        self._analyzing: set[int] = set()  # root issues currently being analyzed
+        self._lock = asyncio.Lock()  # protects _trees mutations
 
     async def _emit(self, event: str, data: dict):
         log.info("Event: %s %s", event, json.dumps(data, default=str))
@@ -144,7 +146,9 @@ class IssueTracker:
                     title=di.title,
                     body=di.body,
                     parent_issue=di.parent_issue,
-                    last_comment_id=di.last_comment_id,
+                    # Reset to 0 so first poll re-fetches all comments
+                    # (comments aren't persisted, only count was)
+                    last_comment_id=0,
                     snapshot=di.snapshot,
                 )
             self._trees[disc.root_issue] = tree
@@ -153,20 +157,26 @@ class IssueTracker:
     # ── Poll Cycle ─────────────────────────────────────────
 
     async def _poll_cycle(self):
-        # 1. Discover new root issues
-        new_roots = await self._discover_roots()
+        async with self._lock:
+            # 1. Discover new root issues
+            new_roots = await self._discover_roots()
 
-        # 2. For each active tree: crawl children, fetch new comments, analyze
-        for root_num, tree in list(self._trees.items()):
-            if tree.status == "submitted":
-                continue
+            # 2. For each active tree: crawl children, fetch new comments, analyze
+            for root_num, tree in list(self._trees.items()):
+                if tree.status == "submitted":
+                    continue
+                if root_num in self._analyzing:
+                    continue  # skip if analyze_now is already running for this tree
 
-            await self._crawl_children(tree)
-            has_new = await self._fetch_new_comments(tree)
+                has_new = await self._fetch_new_comments(tree)
 
-            # Analyze if there are new comments OR if this is a freshly discovered tree
-            if has_new or root_num in new_roots or not tree.last_analysis:
-                await self._analyze_tree(tree)
+                # Only re-crawl children when there are new comments (reduce API calls)
+                if has_new:
+                    await self._crawl_children(tree)
+
+                # Analyze if there are new comments OR if this is a freshly discovered tree
+                if has_new or root_num in new_roots or not tree.last_analysis:
+                    await self._safe_analyze(tree)
 
     # ── Phase 1: Discover root issues ──────────────────────
 
@@ -333,8 +343,13 @@ class IssueTracker:
             lines.append(f"- #{num}: {node.title}{parent} [{comment_count} comments]")
         lines.append("")
 
-        # Full content of each issue
+        # Full content of each issue (with cycle protection)
+        visited = set()
+
         def render_node(num: int, indent: int = 0):
+            if num in visited:
+                return  # break cycles
+            visited.add(num)
             node = tree.nodes[num]
             pfx = "  " * indent
             is_root = num == tree.root_issue
@@ -346,11 +361,17 @@ class IssueTracker:
             lines.append(f"{pfx}{node.body[:3000]}")
 
             if node.comments:
-                lines.append(f"{pfx}### Comments ({len(node.comments)})")
-                for c in node.comments:
-                    author = c.get("author", {}).get("login", "unknown")
-                    body = c.get("body", "")[:1000]
-                    lines.append(f"{pfx}- **@{author}**: {body}")
+                # Filter out bot's own comments to avoid self-referential loop
+                human_comments = [
+                    c for c in node.comments
+                    if "Orchestra Discussion Analyst" not in c.get("body", "")
+                ]
+                if human_comments:
+                    lines.append(f"{pfx}### Comments ({len(human_comments)})")
+                    for c in human_comments:
+                        author = c.get("author", {}).get("login", "unknown")
+                        body = c.get("body", "")[:1000]
+                        lines.append(f"{pfx}- **@{author}**: {body}")
 
             # Render children
             children = [n for n, nd in tree.nodes.items() if nd.parent_issue == num]
@@ -359,22 +380,25 @@ class IssueTracker:
 
         render_node(tree.root_issue)
 
-        # Also render orphan nodes (linked but parent not the root chain)
-        rendered = set()
-        def collect_rendered(num):
-            rendered.add(num)
-            for n, nd in tree.nodes.items():
-                if nd.parent_issue == num:
-                    collect_rendered(n)
-        collect_rendered(tree.root_issue)
-
+        # Also render orphan nodes not reached from root
         for num in sorted(tree.nodes):
-            if num not in rendered:
+            if num not in visited:
                 render_node(num, indent=0)
 
         return "\n".join(lines)
 
     # ── Phase 5: Dispatch DiscussionAnalyst ────────────────
+
+    async def _safe_analyze(self, tree: DiscussionTree):
+        """Guard against concurrent analysis of the same tree."""
+        if tree.root_issue in self._analyzing:
+            log.info("Skipping analysis for #%d — already in progress", tree.root_issue)
+            return
+        self._analyzing.add(tree.root_issue)
+        try:
+            await self._analyze_tree(tree)
+        finally:
+            self._analyzing.discard(tree.root_issue)
 
     async def _analyze_tree(self, tree: DiscussionTree):
         """Spawn a DiscussionAnalyst to analyze the tree and post comments."""
@@ -498,11 +522,12 @@ class IssueTracker:
         # Update maturity status
         maturity = parsed.get("maturity", tree.status)
         if maturity != tree.status:
+            old_status = tree.status
             tree.status = maturity
             await self.task_queue.update_discussion(tree.root_issue, status=maturity)
             await self._emit("discussion_status_changed", {
                 "root": tree.root_issue,
-                "old_status": tree.status,
+                "old_status": old_status,
                 "new_status": maturity,
             })
 
@@ -545,21 +570,24 @@ class IssueTracker:
 
     async def analyze_now(self, issue_number: int) -> None:
         """Immediately analyze a specific issue (called when user adds a focus issue)."""
-        # Register as root if not already tracked
-        if issue_number not in self._trees:
-            issue = await self.github.get_issue(issue_number)
-            if issue:
-                await self._register_root(
-                    issue_number, issue["title"], issue.get("body", ""),
-                )
+        async with self._lock:
+            # Register as root if not already tracked
+            if issue_number not in self._trees:
+                issue = await self.github.get_issue(issue_number)
+                if issue:
+                    await self._register_root(
+                        issue_number, issue["title"], issue.get("body", ""),
+                    )
 
-        tree = self._trees.get(issue_number)
-        if not tree:
-            return
+            tree = self._trees.get(issue_number)
+            if not tree:
+                return
 
-        await self._crawl_children(tree)
-        await self._fetch_new_comments(tree)
-        await self._analyze_tree(tree)
+            await self._crawl_children(tree)
+            await self._fetch_new_comments(tree)
+
+        # Run analysis outside the lock (it's long-running)
+        await self._safe_analyze(tree)
 
     @staticmethod
     def _parse_result(output: str) -> Optional[dict]:
