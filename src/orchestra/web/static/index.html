@@ -54,6 +54,13 @@
           <input type="text" id="tag-input" placeholder="Add label..." />
           <button class="btn" onclick="addWatchTag()">Add</button>
         </div>
+        <div class="tag-editor-divider"></div>
+        <div class="tag-editor-header">Focus Issues</div>
+        <div id="focus-pills" class="tag-pills"></div>
+        <div class="tag-input-row">
+          <input type="number" id="focus-input" placeholder="#123" min="1" />
+          <button class="btn" onclick="addFocusIssue()">Add</button>
+        </div>
       </div>
     </div>
     <button id="btn-discussions" class="btn" title="View tracked discussions">Discussions</button>
@@ -82,6 +89,7 @@
     </div>
   </section>
 
+  <div id="resize-h" class="resizer resizer-h" title="Drag to resize"></div>
   <section id="detail-panel" class="panel">
     <div class="panel-header">
       <span id="detail-title">Select a node</span>
@@ -107,6 +115,7 @@
   </div>
 </div>
 
+<div id="resize-v" class="resizer resizer-v" title="Drag to resize"></div>
 <footer id="event-log">
   <div class="log-tabs">
     <button class="log-tab active" data-tab="events">Events</button>

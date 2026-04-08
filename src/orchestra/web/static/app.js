@@ -1154,6 +1154,77 @@ function startDashboard() {
   connectSSE();
 }
 
+// ── Panel Resizers ─────────────────────────────────────────────
+
+(function initResizers() {
+  // Horizontal resizer: between graph-panel and detail-panel
+  const resizeH = document.getElementById('resize-h');
+  const graphPanel = document.getElementById('graph-panel');
+  const detailPanel = document.getElementById('detail-panel');
+
+  if (resizeH && graphPanel && detailPanel) {
+    let startX, startGraphW, startDetailW;
+
+    resizeH.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      startX = e.clientX;
+      startGraphW = graphPanel.offsetWidth;
+      startDetailW = detailPanel.offsetWidth;
+      document.body.classList.add('resizing');
+      resizeH.classList.add('active');
+
+      function onMove(e) {
+        const dx = e.clientX - startX;
+        const newGraphW = Math.max(250, startGraphW + dx);
+        const newDetailW = Math.max(200, startDetailW - dx);
+        graphPanel.style.flex = 'none';
+        graphPanel.style.width = newGraphW + 'px';
+        detailPanel.style.width = newDetailW + 'px';
+        detailPanel.style.minWidth = '200px';
+      }
+      function onUp() {
+        document.body.classList.remove('resizing');
+        resizeH.classList.remove('active');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+
+  // Vertical resizer: between main and footer
+  const resizeV = document.getElementById('resize-v');
+  const footer = document.getElementById('event-log');
+  const mainEl = document.querySelector('main');
+
+  if (resizeV && footer && mainEl) {
+    let startY, startFooterH;
+
+    resizeV.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      startY = e.clientY;
+      startFooterH = footer.offsetHeight;
+      document.body.classList.add('resizing-v');
+      resizeV.classList.add('active');
+
+      function onMove(e) {
+        const dy = startY - e.clientY;
+        const newH = Math.max(60, Math.min(window.innerHeight * 0.6, startFooterH + dy));
+        footer.style.height = newH + 'px';
+      }
+      function onUp() {
+        document.body.classList.remove('resizing-v');
+        resizeV.classList.remove('active');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+})();
+
 // ── Issues Tab ─────────────────────────────────────────────────
 
 let issuesState = 'open';
@@ -1163,15 +1234,26 @@ async function fetchIssues(state) {
   if (state) issuesState = state;
   const list = document.getElementById('issues-list');
   if (!list) return;
-  list.innerHTML = '<div class="issues-loading">Loading issues...</div>';
+
+  // Show cached data immediately (no flash), only show loading on first load
+  if (!issuesCache.length) {
+    list.innerHTML = '<div class="issues-loading">Loading issues...</div>';
+  }
 
   try {
     const res = await fetch(`/api/issues?state=${issuesState}`);
     if (!res.ok) throw new Error('Failed to fetch');
-    issuesCache = await res.json();
-    renderIssuesList(issuesCache);
+    const fresh = await res.json();
+    // Only re-render if data actually changed
+    if (JSON.stringify(fresh) !== JSON.stringify(issuesCache)) {
+      issuesCache = fresh;
+      renderIssuesList(issuesCache);
+    }
   } catch (e) {
-    list.innerHTML = `<div class="issues-empty">Could not load issues: ${esc(e.message)}</div>`;
+    // On error, keep showing cache if available
+    if (!issuesCache.length) {
+      list.innerHTML = `<div class="issues-empty">Could not load issues: ${esc(e.message)}</div>`;
+    }
   }
 }
 
@@ -1247,7 +1329,7 @@ async function toggleWatch() {
       const res = await fetch('/api/tracking/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ labels: watchLabels, poll_interval: 120, auto_submit: false }),
+        body: JSON.stringify({ labels: watchLabels, focus_issues: focusIssues, poll_interval: 120, auto_submit: false }),
       });
       if (res.ok) watchActive = true;
     } else {
@@ -1274,19 +1356,29 @@ async function fetchTrackingStatus() {
       const data = await res.json();
       watchActive = data.active;
       if (data.labels) watchLabels = data.labels;
+      if (data.focus_issues) focusIssues = data.focus_issues;
       updateWatchBtn();
       renderTagPills();
+      renderFocusPills();
     }
   } catch (e) {
     // tracking endpoint may not exist yet
   }
-  // Also fetch saved labels if tracker not active
+  // Also fetch saved labels/focus if tracker not active
   try {
-    const res = await fetch('/api/tracking/labels');
-    if (res.ok) {
-      const data = await res.json();
+    const [labelsRes, focusRes] = await Promise.all([
+      fetch('/api/tracking/labels'),
+      fetch('/api/tracking/focus'),
+    ]);
+    if (labelsRes.ok) {
+      const data = await labelsRes.json();
       if (data.labels) watchLabels = data.labels;
       renderTagPills();
+    }
+    if (focusRes.ok) {
+      const data = await focusRes.json();
+      if (data.issues) focusIssues = data.issues;
+      renderFocusPills();
     }
   } catch (e) {}
 }
@@ -1333,6 +1425,56 @@ async function saveWatchLabels() {
     console.error('saveWatchLabels error:', e);
   }
 }
+
+// ── Focus Issues Editor ─────────────────────────────────────────
+
+let focusIssues = [];
+
+function renderFocusPills() {
+  const container = document.getElementById('focus-pills');
+  if (!container) return;
+  if (!focusIssues.length) {
+    container.innerHTML = '<span style="font-size:11px;color:var(--text-dim)">No pinned issues</span>';
+    return;
+  }
+  container.innerHTML = focusIssues.map(num =>
+    `<span class="tag-pill focus">#${num}<button class="tag-pill-remove" onclick="removeFocusIssue(${num})">&times;</button></span>`
+  ).join('');
+}
+
+async function addFocusIssue() {
+  const input = document.getElementById('focus-input');
+  const num = parseInt(input.value, 10);
+  if (!num || num < 1 || focusIssues.includes(num)) { input.value = ''; return; }
+
+  focusIssues.push(num);
+  focusIssues.sort((a, b) => a - b);
+  input.value = '';
+  renderFocusPills();
+  await saveFocusIssues();
+}
+
+async function removeFocusIssue(num) {
+  focusIssues = focusIssues.filter(n => n !== num);
+  renderFocusPills();
+  await saveFocusIssues();
+}
+
+async function saveFocusIssues() {
+  try {
+    await fetch('/api/tracking/focus', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issues: focusIssues }),
+    });
+  } catch (e) {
+    console.error('saveFocusIssues error:', e);
+  }
+}
+
+document.getElementById('focus-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); addFocusIssue(); }
+});
 
 function toggleTagEditor() {
   tagEditorOpen = !tagEditorOpen;
