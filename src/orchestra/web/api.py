@@ -468,6 +468,7 @@ async def review_task(task_id: str, action: ReviewAction):
 
 class WatchRequest(BaseModel):
     labels: list[str] = ["discuss"]
+    focus_issues: list[int] = []
     poll_interval: int = 120
     auto_submit: bool = False
 
@@ -478,11 +479,12 @@ async def start_tracking(req: WatchRequest):
     orch = _orch()
     config = WatchConfig(
         watch_labels=req.labels,
+        focus_issues=req.focus_issues,
         poll_interval=req.poll_interval,
         auto_submit=req.auto_submit,
     )
     await orch.start_tracking(config)
-    return {"status": "tracking", "labels": req.labels}
+    return {"status": "tracking", "labels": req.labels, "focus_issues": req.focus_issues}
 
 
 @app.post("/api/tracking/stop")
@@ -502,6 +504,7 @@ async def tracking_status():
     return {
         "active": True,
         "labels": orch.tracker.config.watch_labels,
+        "focus_issues": orch.tracker.config.focus_issues,
         "tree_count": len(orch.tracker.get_trees()),
     }
 
@@ -510,9 +513,13 @@ class LabelsUpdate(BaseModel):
     labels: list[str]
 
 
+class FocusIssuesUpdate(BaseModel):
+    issues: list[int]
+
+
 @app.put("/api/tracking/labels")
 async def update_tracking_labels(req: LabelsUpdate):
-    """Update the labels the tracker watches. Works whether tracking is active or not."""
+    """Update the labels the tracker watches."""
     orch = _orch()
     labels = [l.strip() for l in req.labels if l.strip()]
     if not labels:
@@ -522,8 +529,29 @@ async def update_tracking_labels(req: LabelsUpdate):
         orch.tracker.config.watch_labels = labels
         return {"status": "updated", "labels": labels, "active": True}
     else:
-        # Store for next start — save to a module-level default
         return {"status": "saved", "labels": labels, "active": False}
+
+
+@app.put("/api/tracking/focus")
+async def update_focus_issues(req: FocusIssuesUpdate):
+    """Set specific issue numbers for the tracker to focus on."""
+    orch = _orch()
+    issues = sorted(set(req.issues))
+    if orch.tracker:
+        orch.tracker.config.focus_issues = issues
+        return {"status": "updated", "issues": issues, "active": True}
+    return {"status": "saved", "issues": issues, "active": False}
+
+
+@app.get("/api/tracking/focus")
+async def get_focus_issues():
+    """Get current focus issue numbers."""
+    if not _is_initialized():
+        return {"issues": []}
+    orch = _orch()
+    if orch.tracker:
+        return {"issues": orch.tracker.config.focus_issues}
+    return {"issues": []}
 
 
 @app.get("/api/tracking/labels")

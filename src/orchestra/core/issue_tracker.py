@@ -41,6 +41,7 @@ SPAWN_PATTERNS = re.compile(
 @dataclass
 class WatchConfig:
     watch_labels: list[str] = field(default_factory=lambda: ["discuss"])
+    focus_issues: list[int] = field(default_factory=list)  # specific issue numbers to track
     poll_interval: int = 120
     auto_submit: bool = False
     max_depth: int = 3
@@ -172,32 +173,42 @@ class IssueTracker:
 
     # ── Phase 1: Discover root issues ──────────────────────
 
+    async def _register_root(self, num: int, title: str, body: str = ""):
+        """Register a single issue as a discussion tree root."""
+        if num in self._trees:
+            return
+        tree = DiscussionTree(root_issue=num, title=title)
+        tree.nodes[num] = TrackedNode(
+            issue_number=num, title=title, body=body,
+        )
+        self._trees[num] = tree
+
+        await self.task_queue.upsert_discussion(num, title)
+        await self.task_queue.upsert_discussion_issue(num, num, title, body=body)
+
+        log.info("Discovered discussion root: #%d %s", num, title)
+        await self._emit("discussion_discovered", {
+            "issue_number": num, "title": title,
+        })
+
     async def _discover_roots(self):
+        # By label
         for label in self.config.watch_labels:
             issues = await self.github.list_issues_by_label(label)
             for issue in issues:
-                num = issue["number"]
-                if num in self._trees:
-                    continue
-
-                tree = DiscussionTree(root_issue=num, title=issue["title"])
-                tree.nodes[num] = TrackedNode(
-                    issue_number=num,
-                    title=issue["title"],
-                    body=issue.get("body", ""),
-                )
-                self._trees[num] = tree
-
-                # Persist
-                await self.task_queue.upsert_discussion(num, issue["title"])
-                await self.task_queue.upsert_discussion_issue(
-                    num, num, issue["title"], body=issue.get("body", ""),
+                await self._register_root(
+                    issue["number"], issue["title"], issue.get("body", ""),
                 )
 
-                log.info("Discovered discussion root: #%d %s", num, issue["title"])
-                await self._emit("discussion_discovered", {
-                    "issue_number": num, "title": issue["title"],
-                })
+        # By explicit focus issue numbers
+        for num in self.config.focus_issues:
+            if num in self._trees:
+                continue
+            issue = await self.github.get_issue(num)
+            if issue:
+                await self._register_root(
+                    num, issue["title"], issue.get("body", ""),
+                )
 
     # ── Phase 2: Crawl child issues ────────────────────────
 
