@@ -25,7 +25,7 @@ from typing import Optional, Callable, Awaitable
 
 from .github_manager import GitHubManager
 from .agent_spawner import AgentSpawner, AgentRole
-from .task_queue import TaskQueue, Discussion, DiscussionIssue
+from .task_queue import TaskQueue, Discussion, DiscussionIssue, DraftComment
 
 log = logging.getLogger(__name__)
 
@@ -433,19 +433,26 @@ class IssueTracker:
     # ── Phase 6: Handle agent result ───────────────────────
 
     async def _handle_result(self, tree: DiscussionTree, parsed: dict):
-        """Process DiscussionAnalyst output: post comments, update snapshots, check maturity."""
+        """Process DiscussionAnalyst output: save drafts for review, update snapshots."""
 
-        # Post comments on specific issues
+        # Save comments as drafts for user review (not posted directly)
         for action in parsed.get("comments", []):
             target = action.get("issue_number", tree.root_issue)
             body = action.get("body", "")
             if not body:
                 continue
-            body += "\n\n---\n*Orchestra Discussion Analyst*"
-            await self.github.post_issue_comment(target, body)
-            await self._emit("discussion_commented", {
+            draft = await self.task_queue.add_draft_comment(
+                root_issue=tree.root_issue,
+                target_issue=target,
+                body=body,
+                source="analyst",
+            )
+            await self._emit("draft_comment_created", {
+                "draft_id": draft.id,
                 "root": tree.root_issue,
                 "target_issue": target,
+                "source": "analyst",
+                "body_preview": body[:200],
             })
 
         # Update snapshots for each issue
@@ -497,6 +504,40 @@ class IssueTracker:
 
     def get_tree(self, root_issue: int) -> Optional[DiscussionTree]:
         return self._trees.get(root_issue)
+
+    async def post_approved_draft(self, draft_id: int) -> bool:
+        """Post an approved draft comment to GitHub."""
+        draft = await self.task_queue.get_draft_comment(draft_id)
+        if not draft or draft.status != "pending":
+            return False
+        body = draft.body + "\n\n---\n*Orchestra Discussion Analyst*"
+        ok = await self.github.post_issue_comment(draft.target_issue, body)
+        if ok:
+            await self.task_queue.update_draft_status(draft_id, "posted")
+            await self._emit("discussion_commented", {
+                "root": draft.root_issue,
+                "target_issue": draft.target_issue,
+                "draft_id": draft_id,
+            })
+        return ok
+
+    async def analyze_now(self, issue_number: int) -> None:
+        """Immediately analyze a specific issue (called when user adds a focus issue)."""
+        # Register as root if not already tracked
+        if issue_number not in self._trees:
+            issue = await self.github.get_issue(issue_number)
+            if issue:
+                await self._register_root(
+                    issue_number, issue["title"], issue.get("body", ""),
+                )
+
+        tree = self._trees.get(issue_number)
+        if not tree:
+            return
+
+        await self._crawl_children(tree)
+        await self._fetch_new_comments(tree)
+        await self._analyze_tree(tree)
 
     @staticmethod
     def _parse_result(output: str) -> Optional[dict]:

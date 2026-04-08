@@ -78,6 +78,19 @@ CREATE TABLE IF NOT EXISTS discussion_issues (
 );
 
 CREATE INDEX IF NOT EXISTS idx_disc_issues_root ON discussion_issues(root_issue);
+
+CREATE TABLE IF NOT EXISTS draft_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    root_issue INTEGER NOT NULL,
+    target_issue INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'analyst',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at REAL NOT NULL,
+    FOREIGN KEY (root_issue) REFERENCES discussions(root_issue)
+);
+
+CREATE INDEX IF NOT EXISTS idx_drafts_status ON draft_comments(status);
 """
 
 
@@ -145,6 +158,18 @@ class DiscussionIssue:
     body: str = ""
     last_comment_id: int = 0
     snapshot: str = ""
+    created_at: float = 0.0
+
+
+@dataclass
+class DraftComment:
+    """A pending comment draft awaiting user review before posting to GitHub."""
+    id: int
+    root_issue: int
+    target_issue: int
+    body: str
+    source: str = "analyst"  # analyst | head_leader
+    status: str = "pending"  # pending | approved | rejected | posted
     created_at: float = 0.0
 
 
@@ -450,5 +475,47 @@ class TaskQueue:
         params.append(issue_number)
         await self._db.execute(
             f"UPDATE discussion_issues SET {', '.join(sets)} WHERE issue_number = ?", params
+        )
+        await self._db.commit()
+
+    # ── Draft Comments ──────────────────────────────────────
+
+    async def add_draft_comment(self, root_issue: int, target_issue: int,
+                                 body: str, source: str = "analyst") -> DraftComment:
+        now = time.time()
+        async with self._db.execute(
+            """INSERT INTO draft_comments (root_issue, target_issue, body, source, status, created_at)
+               VALUES (?, ?, ?, ?, 'pending', ?)""",
+            (root_issue, target_issue, body, source, now),
+        ) as cur:
+            draft_id = cur.lastrowid
+        await self._db.commit()
+        return DraftComment(id=draft_id, root_issue=root_issue,
+                            target_issue=target_issue, body=body,
+                            source=source, created_at=now)
+
+    async def get_draft_comments(self, status: str = "pending") -> list[DraftComment]:
+        async with self._db.execute(
+            "SELECT * FROM draft_comments WHERE status = ? ORDER BY created_at DESC",
+            (status,),
+        ) as cur:
+            return [DraftComment(**dict(row)) async for row in cur]
+
+    async def get_draft_comment(self, draft_id: int) -> Optional[DraftComment]:
+        async with self._db.execute(
+            "SELECT * FROM draft_comments WHERE id = ?", (draft_id,),
+        ) as cur:
+            row = await cur.fetchone()
+            return DraftComment(**dict(row)) if row else None
+
+    async def update_draft_status(self, draft_id: int, status: str) -> None:
+        await self._db.execute(
+            "UPDATE draft_comments SET status = ? WHERE id = ?", (status, draft_id),
+        )
+        await self._db.commit()
+
+    async def update_draft_body(self, draft_id: int, body: str) -> None:
+        await self._db.execute(
+            "UPDATE draft_comments SET body = ? WHERE id = ?", (body, draft_id),
         )
         await self._db.commit()
