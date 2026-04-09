@@ -723,6 +723,43 @@ async def review_draft(draft_id: int, action: DraftAction):
         raise HTTPException(400, f"Unknown action: {action.action}")
 
 
+class ChatMessage(BaseModel):
+    message: str
+
+
+@app.get("/api/drafts/{draft_id}/chat")
+async def get_draft_chat(draft_id: int):
+    """Get chat history for a draft."""
+    orch = _orch()
+    messages = await orch.task_queue.get_draft_messages(draft_id)
+    return [
+        {"id": m.id, "role": m.role, "content": m.content, "created_at": m.created_at}
+        for m in messages
+    ]
+
+
+@app.post("/api/drafts/{draft_id}/chat")
+async def chat_with_draft(draft_id: int, msg: ChatMessage):
+    """Send a message to discuss/refine a draft with the agent."""
+    orch = _orch()
+    if not orch.tracker:
+        raise HTTPException(400, "Tracker not running")
+    draft = await orch.task_queue.get_draft_comment(draft_id)
+    if not draft:
+        raise HTTPException(404, f"Draft {draft_id} not found")
+
+    reply = await orch.tracker.chat_draft(draft_id, msg.message)
+
+    # Re-fetch draft in case it was updated
+    updated_draft = await orch.task_queue.get_draft_comment(draft_id)
+
+    return {
+        "reply": reply,
+        "draft_updated": updated_draft.body != draft.body if updated_draft else False,
+        "draft_body": updated_draft.body if updated_draft else draft.body,
+    }
+
+
 @app.get("/api/events/stream")
 async def event_stream():
     """SSE endpoint — streams new events to the browser."""

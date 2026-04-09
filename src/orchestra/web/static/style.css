@@ -971,6 +971,69 @@ footer {
   margin-bottom: 6px;
 }
 
+/* ── Draft Chat ─────────────────────────────────────────── */
+.draft-chat {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+.draft-chat.hidden { display: none; }
+.draft-chat-messages {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 8px;
+}
+.draft-chat-empty {
+  color: var(--text-dim);
+  font-size: 11px;
+  text-align: center;
+  padding: 12px;
+}
+.draft-chat-msg {
+  margin-bottom: 8px;
+}
+.draft-chat-msg:last-child { margin-bottom: 0; }
+.draft-chat-role {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.draft-chat-msg.user .draft-chat-role { color: var(--accent); }
+.draft-chat-msg.assistant .draft-chat-role { color: var(--c-implemented); }
+.draft-chat-content {
+  font-size: 12px;
+  line-height: 1.6;
+  margin-top: 2px;
+}
+.draft-chat-content p { margin: 4px 0; }
+.draft-chat-thinking .draft-chat-content {
+  color: var(--text-dim);
+  font-style: italic;
+}
+.draft-chat-input-row {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.draft-chat-input {
+  flex: 1;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.draft-chat-input:focus { outline: none; border-color: var(--accent); }
+.draft-chat-input:disabled { opacity: 0.5; }
+.draft-chat-input-row .btn { font-size: 11px; padding: 4px 10px; }
+
 /* ── Issues Tab ─────────────────────────────────────────── */
 .issues-toolbar {
   display: flex;

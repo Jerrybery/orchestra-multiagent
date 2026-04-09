@@ -91,6 +91,17 @@ CREATE TABLE IF NOT EXISTS draft_comments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_drafts_status ON draft_comments(status);
+
+CREATE TABLE IF NOT EXISTS draft_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    FOREIGN KEY (draft_id) REFERENCES draft_comments(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_draft_messages_draft ON draft_messages(draft_id);
 """
 
 
@@ -171,6 +182,16 @@ class DraftComment:
     body: str
     source: str = "analyst"  # analyst | head_leader
     status: str = "pending"  # pending | approved | rejected | posted
+    created_at: float = 0.0
+
+
+@dataclass
+class DraftMessage:
+    """A single message in a draft chat conversation."""
+    id: int = 0
+    draft_id: int = 0
+    role: str = ""        # user | assistant
+    content: str = ""
     created_at: float = 0.0
 
 
@@ -520,3 +541,24 @@ class TaskQueue:
             "UPDATE draft_comments SET body = ? WHERE id = ?", (body, draft_id),
         )
         await self._db.commit()
+
+    # ── Draft Messages ──────────────────────────────────────
+
+    async def add_draft_message(self, draft_id: int, role: str,
+                                 content: str) -> DraftMessage:
+        now = time.time()
+        async with self._db.execute(
+            "INSERT INTO draft_messages (draft_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+            (draft_id, role, content, now),
+        ) as cur:
+            msg_id = cur.lastrowid
+        await self._db.commit()
+        return DraftMessage(id=msg_id, draft_id=draft_id, role=role,
+                            content=content, created_at=now)
+
+    async def get_draft_messages(self, draft_id: int) -> list[DraftMessage]:
+        async with self._db.execute(
+            "SELECT * FROM draft_messages WHERE draft_id = ? ORDER BY created_at ASC",
+            (draft_id,),
+        ) as cur:
+            return [DraftMessage(**dict(row)) async for row in cur]
