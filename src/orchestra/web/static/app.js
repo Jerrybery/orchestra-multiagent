@@ -1558,10 +1558,13 @@ function renderFocusPills() {
   ).join('');
 }
 
+let _analyzingIssues = new Set();
+
 async function addFocusIssue() {
   const input = document.getElementById('focus-input');
   const num = parseInt(input.value, 10);
-  if (!num || num < 1 || focusIssues.includes(num)) { input.value = ''; return; }
+  if (!num || num < 1) { input.value = ''; return; }
+  if (focusIssues.includes(num) || _analyzingIssues.has(num)) { input.value = ''; return; }
 
   focusIssues.push(num);
   focusIssues.sort((a, b) => a - b);
@@ -1569,11 +1572,14 @@ async function addFocusIssue() {
   renderFocusPills();
   await saveFocusIssues();
 
-  // Immediately trigger analysis on this issue
+  // Immediately trigger analysis (with dedup guard)
+  _analyzingIssues.add(num);
   try {
     await fetch(`/api/discussions/${num}/analyze`, { method: 'POST' });
     addLogEntry('focus_analyze', `Started analyzing issue #${num}`);
   } catch (e) {}
+  // Keep in set until agent finishes (cleared by SSE event or timeout)
+  setTimeout(() => _analyzingIssues.delete(num), 300000);
 }
 
 async function removeFocusIssue(num) {

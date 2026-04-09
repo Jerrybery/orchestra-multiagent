@@ -157,26 +157,30 @@ class IssueTracker:
     # ── Poll Cycle ─────────────────────────────────────────
 
     async def _poll_cycle(self):
+        to_analyze: list[DiscussionTree] = []
+
         async with self._lock:
             # 1. Discover new root issues
             new_roots = await self._discover_roots()
 
-            # 2. For each active tree: crawl children, fetch new comments, analyze
+            # 2. For each active tree: fetch new comments, decide if analysis needed
             for root_num, tree in list(self._trees.items()):
                 if tree.status == "submitted":
                     continue
                 if root_num in self._analyzing:
-                    continue  # skip if analyze_now is already running for this tree
+                    continue
 
                 has_new = await self._fetch_new_comments(tree)
 
-                # Only re-crawl children when there are new comments (reduce API calls)
                 if has_new:
                     await self._crawl_children(tree)
 
-                # Analyze if there are new comments OR if this is a freshly discovered tree
                 if has_new or root_num in new_roots or not tree.last_analysis:
-                    await self._safe_analyze(tree)
+                    to_analyze.append(tree)
+
+        # Run analysis outside the lock (long-running)
+        for tree in to_analyze:
+            await self._safe_analyze(tree)
 
     # ── Phase 1: Discover root issues ──────────────────────
 
