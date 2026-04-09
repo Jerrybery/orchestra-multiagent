@@ -600,7 +600,7 @@ class IssueTracker:
 
         system_prompt = (
             "你是 Orchestra 多智能体系统中的讨论分析师。你正在和用户讨论一条待发布到 GitHub 的评论草稿。\n"
-            "你必须使用中文回复。\n\n"
+            "你的回复语言必须与 issue 中使用的语言保持一致。\n\n"
             f"## 项目架构\n{arch}\n\n"
             f"## 讨论树上下文\n{tree_context}\n\n"
             f"## 当前草稿内容\n{draft.body}\n\n"
