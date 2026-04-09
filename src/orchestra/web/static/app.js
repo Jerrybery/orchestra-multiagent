@@ -1377,8 +1377,9 @@ function renderDrafts(drafts) {
       <div class="draft-chat hidden" id="draft-chat-${d.id}">
         <div class="draft-chat-messages" id="draft-chat-msgs-${d.id}"></div>
         <div class="draft-chat-input-row">
-          <input type="text" class="draft-chat-input" id="draft-chat-input-${d.id}"
-                 placeholder="和 agent 讨论这条草稿..." />
+          <textarea class="draft-chat-input" id="draft-chat-input-${d.id}"
+                    placeholder="和 agent 讨论这条草稿... (Enter 发送, Shift+Enter 换行)"
+                    rows="1"></textarea>
           <button class="btn" onclick="sendDraftChat(${d.id})">发送</button>
         </div>
       </div>
@@ -1457,13 +1458,23 @@ async function toggleDraftChat(draftId) {
   panel.classList.toggle('hidden');
 
   if (isHidden) {
-    // Load chat history
     await loadDraftChat(draftId);
     const input = document.getElementById(`draft-chat-input-${draftId}`);
     if (input) {
       input.focus();
+      // Auto-grow textarea
+      const autoGrow = () => {
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+      };
+      input.addEventListener('input', autoGrow);
       input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendDraftChat(draftId); }
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          sendDraftChat(draftId);
+          // Reset height after send
+          input.style.height = 'auto';
+        }
       });
     }
   }
