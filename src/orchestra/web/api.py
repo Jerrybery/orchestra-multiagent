@@ -642,10 +642,22 @@ async def submit_discussion(root_issue: int):
 
 @app.post("/api/discussions/{issue_number}/analyze")
 async def analyze_issue_now(issue_number: int):
-    """Immediately analyze an issue (used when user adds a focus issue)."""
+    """Immediately analyze an issue. Auto-starts tracker if not running."""
     orch = _orch()
+
+    # Auto-start tracker with current focus issue if not running
     if not orch.tracker:
-        raise HTTPException(400, "Tracker not running")
+        from ..core.issue_tracker import WatchConfig
+        config = WatchConfig(
+            watch_labels=["discuss"],
+            focus_issues=[issue_number],
+        )
+        await orch.start_tracking(config)
+
+    # Ensure this issue is in focus list
+    if issue_number not in orch.tracker.config.focus_issues:
+        orch.tracker.config.focus_issues.append(issue_number)
+
     async def _run_analyze():
         try:
             await orch.tracker.analyze_now(issue_number)
