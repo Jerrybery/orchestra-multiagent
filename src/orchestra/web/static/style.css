@@ -944,9 +944,11 @@ footer {
   padding: 8px;
   font-size: 12px;
   line-height: 1.6;
-  max-height: 120px;
+  max-height: 50vh;
+  min-height: 40px;
   overflow-y: auto;
   margin-bottom: 6px;
+  resize: vertical;
 }
 .draft-actions {
   display: flex;
@@ -956,7 +958,8 @@ footer {
 
 .draft-edit-area {
   width: 100%;
-  min-height: 60px;
+  min-height: 100px;
+  max-height: 50vh;
   background: var(--bg-panel);
   border: 1px solid var(--accent);
   border-radius: 4px;
