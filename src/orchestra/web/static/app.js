@@ -1410,26 +1410,49 @@ function editDraft(draftId) {
   const bodyDiv = document.getElementById(`draft-body-${draftId}`);
   if (!bodyDiv) return;
 
-  // Replace body display with editable textarea
-  bodyDiv.outerHTML = `<textarea class="draft-edit-area" id="draft-edit-${draftId}">${esc(draft.body)}</textarea>`;
+  // Replace body display with editable textarea (use .value, not innerHTML)
+  const textarea = document.createElement('textarea');
+  textarea.className = 'draft-edit-area';
+  textarea.id = `draft-edit-${draftId}`;
+  textarea.value = draft.body;  // raw text, no HTML escaping
+  bodyDiv.replaceWith(textarea);
 
-  // Update actions to save
+  // Replace action buttons
   const actions = card.querySelector('.draft-actions');
-  actions.innerHTML = `
-    <button class="btn btn-primary" onclick="saveDraftEdit(${draftId})">保存</button>
-    <button class="btn" onclick="fetchDrafts()">取消</button>
-  `;
+  actions.innerHTML = '';
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'btn btn-primary';
+  saveBtn.textContent = '保存';
+  saveBtn.addEventListener('click', () => saveDraftEdit(draftId));
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn';
+  cancelBtn.textContent = '取消';
+  cancelBtn.addEventListener('click', () => cancelDraftEdit(draftId));
+
+  actions.appendChild(saveBtn);
+  actions.appendChild(cancelBtn);
+}
+
+function cancelDraftEdit(draftId) {
+  // Re-render from cache without fetching
+  renderDrafts(draftsCache);
 }
 
 async function saveDraftEdit(draftId) {
   const textarea = document.getElementById(`draft-edit-${draftId}`);
   if (!textarea) return;
+  const newBody = textarea.value;
   await fetch(`/api/drafts/${draftId}/review`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'edit', body: textarea.value }),
+    body: JSON.stringify({ action: 'edit', body: newBody }),
   });
-  fetchDrafts();
+  // Update cache so re-render shows new content
+  const draft = draftsCache.find(d => d.id === draftId);
+  if (draft) draft.body = newBody;
+  renderDrafts(draftsCache);
 }
 
 // ── Discussion Tracking ────────────────────────────────────────
