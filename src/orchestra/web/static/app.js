@@ -1371,7 +1371,16 @@ function renderDrafts(drafts) {
       <div class="draft-actions">
         <button class="btn btn-primary" onclick="reviewDraft(${d.id}, 'approve')">发布到 GitHub</button>
         <button class="btn" onclick="editDraft(${d.id})">编辑</button>
+        <button class="btn" onclick="toggleDraftChat(${d.id})">讨论</button>
         <button class="btn btn-reject" onclick="reviewDraft(${d.id}, 'reject')">丢弃</button>
+      </div>
+      <div class="draft-chat hidden" id="draft-chat-${d.id}">
+        <div class="draft-chat-messages" id="draft-chat-msgs-${d.id}"></div>
+        <div class="draft-chat-input-row">
+          <input type="text" class="draft-chat-input" id="draft-chat-input-${d.id}"
+                 placeholder="和 agent 讨论这条草稿..." />
+          <button class="btn" onclick="sendDraftChat(${d.id})">发送</button>
+        </div>
       </div>
     </div>`;
   }
@@ -1436,8 +1445,107 @@ function editDraft(draftId) {
 }
 
 function cancelDraftEdit(draftId) {
-  // Re-render from cache without fetching
   renderDrafts(draftsCache);
+}
+
+// ── Draft Chat ─────────────────────────────────────────────────
+
+async function toggleDraftChat(draftId) {
+  const panel = document.getElementById(`draft-chat-${draftId}`);
+  if (!panel) return;
+  const isHidden = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden');
+
+  if (isHidden) {
+    // Load chat history
+    await loadDraftChat(draftId);
+    const input = document.getElementById(`draft-chat-input-${draftId}`);
+    if (input) {
+      input.focus();
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendDraftChat(draftId); }
+      });
+    }
+  }
+}
+
+async function loadDraftChat(draftId) {
+  const container = document.getElementById(`draft-chat-msgs-${draftId}`);
+  if (!container) return;
+  try {
+    const res = await fetch(`/api/drafts/${draftId}/chat`);
+    if (!res.ok) return;
+    const messages = await res.json();
+    renderDraftChatMessages(container, messages);
+  } catch (e) {}
+}
+
+function renderDraftChatMessages(container, messages) {
+  if (!messages.length) {
+    container.innerHTML = '<div class="draft-chat-empty">和 agent 讨论如何修改这条草稿</div>';
+    return;
+  }
+  container.innerHTML = messages.map(m =>
+    `<div class="draft-chat-msg ${esc(m.role)}">
+      <span class="draft-chat-role">${m.role === 'user' ? '你' : 'Agent'}</span>
+      <div class="draft-chat-content">${marked.parse(m.content)}</div>
+    </div>`
+  ).join('');
+  container.scrollTop = container.scrollHeight;
+}
+
+async function sendDraftChat(draftId) {
+  const input = document.getElementById(`draft-chat-input-${draftId}`);
+  if (!input || !input.value.trim()) return;
+  const message = input.value.trim();
+  input.value = '';
+  input.disabled = true;
+
+  const container = document.getElementById(`draft-chat-msgs-${draftId}`);
+  // Append user message immediately
+  container.innerHTML += `<div class="draft-chat-msg user">
+    <span class="draft-chat-role">你</span>
+    <div class="draft-chat-content">${esc(message)}</div>
+  </div>
+  <div class="draft-chat-msg assistant draft-chat-thinking" id="draft-chat-pending-${draftId}">
+    <span class="draft-chat-role">Agent</span>
+    <div class="draft-chat-content">思考中...</div>
+  </div>`;
+  container.scrollTop = container.scrollHeight;
+
+  try {
+    const res = await fetch(`/api/drafts/${draftId}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+    const data = await res.json();
+
+    // Remove thinking indicator
+    const pending = document.getElementById(`draft-chat-pending-${draftId}`);
+    if (pending) {
+      pending.outerHTML = `<div class="draft-chat-msg assistant">
+        <span class="draft-chat-role">Agent</span>
+        <div class="draft-chat-content">${marked.parse(data.reply || '')}</div>
+      </div>`;
+    }
+
+    // If draft was updated, refresh the draft body display
+    if (data.draft_updated) {
+      const draft = draftsCache.find(d => d.id === draftId);
+      if (draft) draft.body = data.draft_body;
+      const bodyEl = document.getElementById(`draft-body-${draftId}`);
+      if (bodyEl) bodyEl.innerHTML = marked.parse(data.draft_body || '');
+      addLogEntry('draft_updated', `Draft #${draftId} 已被 agent 更新`);
+    }
+  } catch (e) {
+    const pending = document.getElementById(`draft-chat-pending-${draftId}`);
+    if (pending) pending.querySelector('.draft-chat-content').textContent = '请求失败: ' + e.message;
+  }
+
+  input.disabled = false;
+  input.focus();
+  container.scrollTop = container.scrollHeight;
 }
 
 async function saveDraftEdit(draftId) {

@@ -575,6 +575,92 @@ class IssueTracker:
             })
         return ok
 
+    async def chat_draft(self, draft_id: int, user_message: str) -> str:
+        """Chat with the agent about a draft. Returns the agent's reply."""
+        draft = await self.task_queue.get_draft_comment(draft_id)
+        if not draft:
+            return "Draft not found."
+
+        tree = self._trees.get(draft.root_issue)
+        tree_context = self._build_tree_context(tree) if tree else "(no tree context)"
+
+        # Build conversation history
+        messages = await self.task_queue.get_draft_messages(draft_id)
+        history = ""
+        for msg in messages:
+            role_label = "用户" if msg.role == "user" else "助手"
+            history += f"\n**{role_label}**: {msg.content}\n"
+
+        # System prompt: draft chat context
+        from .context_manager import ContextManager
+        ctx = ContextManager(self.orchestra_dir)
+        arch = "(not yet created)"
+        if ctx.context_dir.joinpath("architecture.md").exists():
+            arch = ctx.context_dir.joinpath("architecture.md").read_text()
+
+        system_prompt = (
+            "你是 Orchestra 多智能体系统中的讨论分析师。你正在和用户讨论一条待发布到 GitHub 的评论草稿。\n"
+            "你必须使用中文回复。\n\n"
+            f"## 项目架构\n{arch}\n\n"
+            f"## 讨论树上下文\n{tree_context}\n\n"
+            f"## 当前草稿内容\n{draft.body}\n\n"
+        )
+
+        if history:
+            system_prompt += f"## 之前的对话\n{history}\n\n"
+
+        system_prompt += (
+            "## 你的任务\n"
+            "回答用户的问题，或根据用户的反馈修改草稿。\n"
+            "如果你修改了草稿，在回复末尾输出：\n"
+            "DRAFT_UPDATE:<修改后的完整草稿内容>\n"
+            "如果只是讨论不需要修改，正常回复即可，不要输出 DRAFT_UPDATE。\n"
+        )
+
+        task_prompt = user_message
+
+        # Save user message
+        await self.task_queue.add_draft_message(draft_id, "user", user_message)
+
+        handle = await self.spawner.spawn(
+            role=AgentRole.DISCUSSION_ANALYST,
+            system_prompt=system_prompt,
+            task_prompt=task_prompt,
+            cwd=self.project_dir,
+            log_path=self.orchestra_dir / "logs" / f"da-chat-{draft_id}.log",
+        )
+
+        result = await self.spawner.wait(handle)
+        reply = result.stdout.strip()
+        if not reply:
+            reply = "(agent 无回复)"
+
+        # Check if agent wants to update the draft
+        draft_update = None
+        for line in reply.splitlines():
+            if line.startswith("DRAFT_UPDATE:"):
+                draft_update = line[len("DRAFT_UPDATE:"):].strip()
+                break
+
+        # If multi-line DRAFT_UPDATE (everything after the marker)
+        if draft_update is None and "DRAFT_UPDATE:" in reply:
+            idx = reply.index("DRAFT_UPDATE:")
+            draft_update = reply[idx + len("DRAFT_UPDATE:"):].strip()
+            reply = reply[:idx].strip()
+
+        if draft_update:
+            await self.task_queue.update_draft_body(draft_id, draft_update)
+            reply_clean = reply.replace(f"DRAFT_UPDATE:{draft_update}", "").strip()
+            if not reply_clean:
+                reply_clean = "已根据你的反馈更新了草稿。"
+        else:
+            reply_clean = reply
+
+        # Save assistant message
+        await self.task_queue.add_draft_message(draft_id, "assistant", reply_clean)
+
+        return reply_clean
+
     async def analyze_now(self, issue_number: int) -> None:
         """Immediately analyze a specific issue (called when user adds a focus issue)."""
         async with self._lock:
