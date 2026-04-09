@@ -26,6 +26,15 @@ class AgentRole(str, Enum):
     DISCUSSION_ANALYST = "discussion_analyst"
 
 
+# Default model per role — top-level agents use opus, workers use sonnet
+ROLE_MODEL: dict[str, str] = {
+    AgentRole.HEAD_LEADER: "opus",
+    AgentRole.DISCUSSION_ANALYST: "opus",
+    AgentRole.FEATURE_REALIZER: "sonnet",
+    AgentRole.FEATURE_INTERPRETER: "sonnet",
+}
+
+
 class AgentState(str, Enum):
     IDLE = "idle"
     RUNNING = "running"
@@ -141,6 +150,7 @@ class AgentSpawner:
         task_id: Optional[str] = None,
         log_path: Optional[Path] = None,
         add_dirs: list[str | Path] | None = None,
+        model: Optional[str] = None,
     ) -> AgentHandle:
         """Spawn a Claude Code subprocess with stream-json output."""
         agent_id = self._next_id(role)
@@ -160,15 +170,17 @@ class AgentSpawner:
             temp_files.append(sp_file.name)
             cmd.extend(["--system-prompt-file", sp_file.name])
 
-        if self.model:
-            cmd.extend(["--model", self.model])
+        # Model priority: explicit param > role default > spawner default
+        effective_model = model or ROLE_MODEL.get(role, self.model)
+        if effective_model:
+            cmd.extend(["--model", effective_model])
 
         if add_dirs:
             for d in add_dirs:
                 cmd.extend(["--add-dir", str(d)])
 
         # Task prompt via stdin (not positional arg) — avoids length limits and escaping issues
-        log.info("[%s] Spawning in %s: %s", agent_id, cwd, task_prompt[:80])
+        log.info("[%s] Spawning in %s (model=%s): %s", agent_id, cwd, effective_model, task_prompt[:80])
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
