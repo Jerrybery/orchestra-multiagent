@@ -146,9 +146,7 @@ class IssueTracker:
                     title=di.title,
                     body=di.body,
                     parent_issue=di.parent_issue,
-                    # Reset to 0 so first poll re-fetches all comments
-                    # (comments aren't persisted, only count was)
-                    last_comment_id=0,
+                    last_comment_id=di.last_comment_id,
                     snapshot=di.snapshot,
                 )
             self._trees[disc.root_issue] = tree
