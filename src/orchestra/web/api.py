@@ -141,6 +141,7 @@ async def disconnect_project():
     global _orchestrator, _orchestrator_task
 
     if _orchestrator:
+        _orchestrator.stop_tracking()
         _orchestrator.stop()
         await _orchestrator.close()
 
