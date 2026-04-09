@@ -105,6 +105,8 @@ class Orchestrator:
 
     async def start_tracking(self, watch_config: WatchConfig) -> None:
         """Start watching GitHub issues for discussions."""
+        # Stop any existing tracker first
+        self.stop_tracking()
         self.tracker = IssueTracker(
             github=self.github,
             spawner=self.spawner,
@@ -128,10 +130,13 @@ class Orchestrator:
             log.error("IssueTracker crashed: %s", exc, exc_info=exc)
 
     def stop_tracking(self) -> None:
-        """Stop the issue tracker."""
+        """Stop the issue tracker and cancel its background task."""
         if self.tracker:
             self.tracker.stop()
             self.tracker = None
+        if self._tracker_task and not self._tracker_task.done():
+            self._tracker_task.cancel()
+            self._tracker_task = None
 
     async def _on_discussion_ready(self, tree: DiscussionTree, requirement: str) -> None:
         """Called when a discussion tree matures — submit as requirement."""

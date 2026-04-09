@@ -1506,8 +1506,11 @@ function renderTagPills() {
   const container = document.getElementById('tag-pills');
   if (!container) return;
   container.innerHTML = watchLabels.map(label =>
-    `<span class="tag-pill">${esc(label)}<button class="tag-pill-remove" onclick="removeWatchTag('${esc(label)}')">&times;</button></span>`
+    `<span class="tag-pill">${esc(label)}<button class="tag-pill-remove" data-label="${esc(label)}">&times;</button></span>`
   ).join('');
+  container.querySelectorAll('.tag-pill-remove[data-label]').forEach(btn => {
+    btn.addEventListener('click', () => removeWatchTag(btn.dataset.label));
+  });
 }
 
 async function addWatchTag() {
@@ -1554,8 +1557,11 @@ function renderFocusPills() {
     return;
   }
   container.innerHTML = focusIssues.map(num =>
-    `<span class="tag-pill focus">#${num}<button class="tag-pill-remove" onclick="removeFocusIssue(${num})">&times;</button></span>`
+    `<span class="tag-pill focus">#${num}<button class="tag-pill-remove" data-issue="${num}">&times;</button></span>`
   ).join('');
+  container.querySelectorAll('.tag-pill-remove[data-issue]').forEach(btn => {
+    btn.addEventListener('click', () => removeFocusIssue(parseInt(btn.dataset.issue, 10)));
+  });
 }
 
 let _analyzingIssues = new Set();

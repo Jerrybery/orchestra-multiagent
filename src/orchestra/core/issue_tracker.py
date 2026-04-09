@@ -236,6 +236,7 @@ class IssueTracker:
         if len(tree.nodes) >= self.config.max_issues_per_tree:
             return
 
+        nodes_before = len(tree.nodes)
         new_refs: list[tuple[int, int]] = []  # (child_num, parent_num)
 
         for num, node in list(tree.nodes.items()):
@@ -290,8 +291,8 @@ class IssueTracker:
                 "title": issue["title"],
             })
 
-        # Recurse for newly discovered nodes
-        if new_refs:
+        # Recurse only if nodes were actually added (not just candidates found)
+        if len(tree.nodes) > nodes_before:
             await self._crawl_children(tree, depth + 1)
 
     # ── Phase 3: Incremental comment fetching ──────────────
@@ -448,11 +449,15 @@ class IssueTracker:
         )
 
         result = await self.spawner.wait(handle)
-        parsed = self._parse_result(result.stdout)
+        # Try parsing from result_text first, then raw stdout buffer
+        all_output = result.stdout
+        if hasattr(handle, 'stdout_buf'):
+            all_output = all_output + "\n" + "\n".join(handle.stdout_buf)
+        parsed = self._parse_result(all_output)
 
         if not parsed:
-            # Agent didn't output structured JSON — treat entire output as a comment draft
-            text = result.stdout.strip()
+            # Agent didn't output structured JSON — extract clean text as draft
+            text = self._clean_agent_output(result.stdout)
             if text:
                 log.info("DA produced unstructured output for #%d, saving as draft", tree.root_issue)
                 await self.task_queue.add_draft_comment(
@@ -593,6 +598,7 @@ class IssueTracker:
 
     @staticmethod
     def _parse_result(output: str) -> Optional[dict]:
+        # Search all lines (including inside code blocks) for ORCHESTRA_RESULT
         for line in reversed(output.splitlines()):
             m = RESULT_PATTERN.search(line)
             if m:
@@ -601,3 +607,25 @@ class IssueTracker:
                 except json.JSONDecodeError:
                     pass
         return None
+
+    @staticmethod
+    def _clean_agent_output(text: str) -> str:
+        """Strip ORCHESTRA_RESULT blocks, code fences, and session noise from agent output."""
+        lines = []
+        in_code_block = False
+        for line in text.splitlines():
+            # Skip ORCHESTRA_RESULT lines
+            if "ORCHESTRA_RESULT:" in line:
+                continue
+            # Track code blocks that contain ORCHESTRA_RESULT
+            if line.strip().startswith("```"):
+                in_code_block = not in_code_block
+                # Skip code fence lines that wrap ORCHESTRA_RESULT
+                continue
+            if in_code_block and "ORCHESTRA_RESULT" in line:
+                continue
+            lines.append(line)
+        result = "\n".join(lines).strip()
+        # Remove leading "---" separators that agents sometimes add
+        result = re.sub(r'^---\s*\n', '', result)
+        return result
