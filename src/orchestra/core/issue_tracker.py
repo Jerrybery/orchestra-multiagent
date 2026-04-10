@@ -636,6 +636,63 @@ class IssueTracker:
         await self.task_queue.add_draft_message(draft_id, "assistant", reply)
         return reply
 
+    async def rewrite_draft(self, draft_id: int, instruction: str) -> str:
+        """Rewrite a draft based on user instruction. Returns the new draft body."""
+        draft = await self.task_queue.get_draft_comment(draft_id)
+        if not draft:
+            return ""
+
+        tree = self._trees.get(draft.root_issue)
+        tree_context = self._build_tree_context(tree) if tree else "(no tree context)"
+
+        messages = await self.task_queue.get_draft_messages(draft_id)
+        history = ""
+        for msg in messages:
+            role_label = "用户" if msg.role == "user" else "助手"
+            history += f"\n**{role_label}**: {msg.content}\n"
+
+        from .context_manager import ContextManager
+        ctx = ContextManager(self.orchestra_dir)
+        arch = "(not yet created)"
+        if ctx.context_dir.joinpath("architecture.md").exists():
+            arch = ctx.context_dir.joinpath("architecture.md").read_text()
+
+        system_prompt = (
+            "你是 Orchestra 多智能体系统中的讨论分析师。\n"
+            "你的回复语言必须与 issue 中使用的语言保持一致。\n\n"
+            f"## 项目架构\n{arch}\n\n"
+            f"## 讨论树上下文\n{tree_context}\n\n"
+            f"## 当前草稿内容\n{draft.body}\n\n"
+        )
+        if history:
+            system_prompt += f"## 之前的对话\n{history}\n\n"
+        system_prompt += (
+            "## 重要指令\n"
+            "用户要求你重写草稿。你必须**只输出重写后的完整草稿内容**，\n"
+            "不要输出任何解释、前言、说明或对话。\n"
+            "直接输出可以发布到 GitHub issue 的评论正文。\n"
+        )
+
+        await self.task_queue.add_draft_message(draft_id, "user", f"[重写请求] {instruction}")
+
+        handle = await self.spawner.spawn(
+            role=AgentRole.DISCUSSION_ANALYST,
+            system_prompt=system_prompt,
+            task_prompt=instruction or "请根据之前的讨论重写这条草稿",
+            cwd=self.project_dir,
+            log_path=self.orchestra_dir / "logs" / f"da-rewrite-{draft_id}.log",
+        )
+
+        result = await self.spawner.wait(handle)
+        new_body = result.stdout.strip()
+        if not new_body:
+            return ""
+
+        # Update draft body directly
+        await self.task_queue.update_draft_body(draft_id, new_body)
+        await self.task_queue.add_draft_message(draft_id, "assistant", f"[已重写草稿]\n{new_body[:200]}...")
+        return new_body
+
     async def analyze_now(self, issue_number: int) -> None:
         """Immediately analyze a specific issue (called when user adds a focus issue)."""
         async with self._lock:

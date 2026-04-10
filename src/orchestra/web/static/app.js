@@ -1378,9 +1378,10 @@ function renderDrafts(drafts) {
         <div class="draft-chat-messages" id="draft-chat-msgs-${d.id}"></div>
         <div class="draft-chat-input-row">
           <textarea class="draft-chat-input" id="draft-chat-input-${d.id}"
-                    placeholder="和 agent 讨论这条草稿... (Enter 发送, Shift+Enter 换行)"
+                    placeholder="和 agent 讨论... (Enter 发送, Shift+Enter 换行)"
                     rows="1"></textarea>
           <button class="btn" onclick="sendDraftChat(${d.id})">发送</button>
+          <button class="btn btn-rewrite" onclick="rewriteDraft(${d.id})">重写草稿</button>
         </div>
       </div>
     </div>`;
@@ -1517,6 +1518,58 @@ function renderDraftChatMessages(container, messages, draftId) {
   });
 
   container.scrollTop = container.scrollHeight;
+}
+
+async function rewriteDraft(draftId) {
+  const input = document.getElementById(`draft-chat-input-${draftId}`);
+  const instruction = input ? input.value.trim() : '';
+  if (input) input.value = '';
+
+  const container = document.getElementById(`draft-chat-msgs-${draftId}`);
+  // Show rewrite indicator
+  if (container) {
+    container.innerHTML += `<div class="draft-chat-msg user">
+      <span class="draft-chat-role">你</span>
+      <div class="draft-chat-content">${esc(instruction || '重写草稿')}</div>
+    </div>
+    <div class="draft-chat-msg assistant draft-chat-thinking" id="draft-rewrite-pending-${draftId}">
+      <span class="draft-chat-role">Agent</span>
+      <div class="draft-chat-content">正在重写草稿...</div>
+    </div>`;
+    container.scrollTop = container.scrollHeight;
+  }
+
+  try {
+    const res = await fetch(`/api/drafts/${draftId}/rewrite`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: instruction || '请根据之前的讨论重写这条草稿' }),
+    });
+    const data = await res.json();
+
+    // Remove thinking indicator
+    const pending = document.getElementById(`draft-rewrite-pending-${draftId}`);
+    if (pending) {
+      pending.outerHTML = `<div class="draft-chat-msg assistant">
+        <span class="draft-chat-role">Agent</span>
+        <div class="draft-chat-content"><em>草稿已重写</em></div>
+      </div>`;
+    }
+
+    // Update draft body display
+    if (data.body) {
+      const draft = draftsCache.find(d => d.id === draftId);
+      if (draft) draft.body = data.body;
+      const bodyEl = document.getElementById(`draft-body-${draftId}`);
+      if (bodyEl) bodyEl.innerHTML = marked.parse(data.body);
+      addLogEntry('draft_rewritten', `Draft #${draftId} 已重写`);
+    }
+  } catch (e) {
+    const pending = document.getElementById(`draft-rewrite-pending-${draftId}`);
+    if (pending) pending.querySelector('.draft-chat-content').textContent = '重写失败: ' + e.message;
+  }
+
+  if (container) container.scrollTop = container.scrollHeight;
 }
 
 async function applyMsgAsDraft(draftId, content) {

@@ -1048,6 +1048,14 @@ footer {
   padding: 8px 14px;
   align-self: flex-end;
 }
+.btn-rewrite {
+  background: rgba(210,169,34,0.12) !important;
+  border-color: rgba(210,169,34,0.4) !important;
+  color: var(--c-in_progress) !important;
+}
+.btn-rewrite:hover {
+  background: rgba(210,169,34,0.25) !important;
+}
 .draft-chat-apply {
   margin-top: 4px;
   font-size: 10px !important;

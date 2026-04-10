@@ -752,6 +752,18 @@ async def chat_with_draft(draft_id: int, msg: ChatMessage):
     return {"reply": reply}
 
 
+@app.post("/api/drafts/{draft_id}/rewrite")
+async def rewrite_draft(draft_id: int, msg: ChatMessage):
+    """Rewrite a draft based on user instruction. Returns the new draft body."""
+    orch = _orch()
+    if not orch.tracker:
+        raise HTTPException(400, "Tracker not running")
+    new_body = await orch.tracker.rewrite_draft(draft_id, msg.message)
+    if not new_body:
+        raise HTTPException(500, "Agent produced no output")
+    return {"body": new_body}
+
+
 @app.get("/api/events/stream")
 async def event_stream():
     """SSE endpoint — streams new events to the browser."""
