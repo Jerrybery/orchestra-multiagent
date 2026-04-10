@@ -1487,22 +1487,49 @@ async function loadDraftChat(draftId) {
     const res = await fetch(`/api/drafts/${draftId}/chat`);
     if (!res.ok) return;
     const messages = await res.json();
-    renderDraftChatMessages(container, messages);
+    renderDraftChatMessages(container, messages, draftId);
   } catch (e) {}
 }
 
-function renderDraftChatMessages(container, messages) {
+function renderDraftChatMessages(container, messages, draftId) {
   if (!messages.length) {
     container.innerHTML = '<div class="draft-chat-empty">和 agent 讨论如何修改这条草稿</div>';
     return;
   }
-  container.innerHTML = messages.map(m =>
-    `<div class="draft-chat-msg ${esc(m.role)}">
+  container.innerHTML = messages.map((m, i) => {
+    const applyBtn = m.role === 'assistant'
+      ? `<button class="btn draft-chat-apply" data-msg-idx="${i}">应用为草稿</button>`
+      : '';
+    return `<div class="draft-chat-msg ${esc(m.role)}">
       <span class="draft-chat-role">${m.role === 'user' ? '你' : 'Agent'}</span>
       <div class="draft-chat-content">${marked.parse(m.content)}</div>
-    </div>`
-  ).join('');
+      ${applyBtn}
+    </div>`;
+  }).join('');
+
+  // Bind apply buttons
+  container.querySelectorAll('.draft-chat-apply').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.msgIdx, 10);
+      const msg = messages[idx];
+      if (msg) applyMsgAsDraft(draftId, msg.content);
+    });
+  });
+
   container.scrollTop = container.scrollHeight;
+}
+
+async function applyMsgAsDraft(draftId, content) {
+  await fetch(`/api/drafts/${draftId}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'edit', body: content }),
+  });
+  const draft = draftsCache.find(d => d.id === draftId);
+  if (draft) draft.body = content;
+  const bodyEl = document.getElementById(`draft-body-${draftId}`);
+  if (bodyEl) bodyEl.innerHTML = marked.parse(content);
+  addLogEntry('draft_applied', `Draft #${draftId} 已更新为 agent 的回复`);
 }
 
 async function sendDraftChat(draftId) {
@@ -1532,22 +1559,19 @@ async function sendDraftChat(draftId) {
     });
     const data = await res.json();
 
-    // Remove thinking indicator
     const pending = document.getElementById(`draft-chat-pending-${draftId}`);
+    const replyContent = data.reply || '';
     if (pending) {
-      pending.outerHTML = `<div class="draft-chat-msg assistant">
+      const msgDiv = document.createElement('div');
+      msgDiv.className = 'draft-chat-msg assistant';
+      msgDiv.innerHTML = `
         <span class="draft-chat-role">Agent</span>
-        <div class="draft-chat-content">${marked.parse(data.reply || '')}</div>
-      </div>`;
-    }
-
-    // If draft was updated, refresh the draft body display
-    if (data.draft_updated) {
-      const draft = draftsCache.find(d => d.id === draftId);
-      if (draft) draft.body = data.draft_body;
-      const bodyEl = document.getElementById(`draft-body-${draftId}`);
-      if (bodyEl) bodyEl.innerHTML = marked.parse(data.draft_body || '');
-      addLogEntry('draft_updated', `Draft #${draftId} 已被 agent 更新`);
+        <div class="draft-chat-content">${marked.parse(replyContent)}</div>
+        <button class="btn draft-chat-apply">应用为草稿</button>`;
+      msgDiv.querySelector('.draft-chat-apply').addEventListener('click', () => {
+        applyMsgAsDraft(draftId, replyContent);
+      });
+      pending.replaceWith(msgDiv);
     }
   } catch (e) {
     const pending = document.getElementById(`draft-chat-pending-${draftId}`);

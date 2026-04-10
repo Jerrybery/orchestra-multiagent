@@ -611,15 +611,13 @@ class IssueTracker:
 
         system_prompt += (
             "## 你的任务\n"
-            "回答用户的问题，或根据用户的反馈修改草稿。\n"
-            "如果你修改了草稿，在回复末尾输出：\n"
-            "DRAFT_UPDATE:<修改后的完整草稿内容>\n"
-            "如果只是讨论不需要修改，正常回复即可，不要输出 DRAFT_UPDATE。\n"
+            "回答用户的问题，或根据用户的反馈提供修改后的草稿版本。\n"
+            "如果用户要求修改草稿，请直接输出修改后的完整草稿内容。\n"
+            "如果只是讨论，正常回复即可。\n"
         )
 
         task_prompt = user_message
 
-        # Save user message
         await self.task_queue.add_draft_message(draft_id, "user", user_message)
 
         handle = await self.spawner.spawn(
@@ -635,31 +633,8 @@ class IssueTracker:
         if not reply:
             reply = "(agent 无回复)"
 
-        # Check if agent wants to update the draft
-        draft_update = None
-        for line in reply.splitlines():
-            if line.startswith("DRAFT_UPDATE:"):
-                draft_update = line[len("DRAFT_UPDATE:"):].strip()
-                break
-
-        # If multi-line DRAFT_UPDATE (everything after the marker)
-        if draft_update is None and "DRAFT_UPDATE:" in reply:
-            idx = reply.index("DRAFT_UPDATE:")
-            draft_update = reply[idx + len("DRAFT_UPDATE:"):].strip()
-            reply = reply[:idx].strip()
-
-        if draft_update:
-            await self.task_queue.update_draft_body(draft_id, draft_update)
-            reply_clean = reply.replace(f"DRAFT_UPDATE:{draft_update}", "").strip()
-            if not reply_clean:
-                reply_clean = "已根据你的反馈更新了草稿。"
-        else:
-            reply_clean = reply
-
-        # Save assistant message
-        await self.task_queue.add_draft_message(draft_id, "assistant", reply_clean)
-
-        return reply_clean
+        await self.task_queue.add_draft_message(draft_id, "assistant", reply)
+        return reply
 
     async def analyze_now(self, issue_number: int) -> None:
         """Immediately analyze a specific issue (called when user adds a focus issue)."""

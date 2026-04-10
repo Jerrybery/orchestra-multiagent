@@ -749,15 +749,7 @@ async def chat_with_draft(draft_id: int, msg: ChatMessage):
         raise HTTPException(404, f"Draft {draft_id} not found")
 
     reply = await orch.tracker.chat_draft(draft_id, msg.message)
-
-    # Re-fetch draft in case it was updated
-    updated_draft = await orch.task_queue.get_draft_comment(draft_id)
-
-    return {
-        "reply": reply,
-        "draft_updated": updated_draft.body != draft.body if updated_draft else False,
-        "draft_body": updated_draft.body if updated_draft else draft.body,
-    }
+    return {"reply": reply}
 
 
 @app.get("/api/events/stream")

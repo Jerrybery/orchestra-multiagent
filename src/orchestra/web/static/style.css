@@ -1048,6 +1048,13 @@ footer {
   padding: 8px 14px;
   align-self: flex-end;
 }
+.draft-chat-apply {
+  margin-top: 4px;
+  font-size: 10px !important;
+  padding: 2px 8px !important;
+  opacity: 0.7;
+}
+.draft-chat-apply:hover { opacity: 1; }
 
 /* ── Issues Tab ─────────────────────────────────────────── */
 .issues-toolbar {
