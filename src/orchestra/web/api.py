@@ -74,6 +74,7 @@ class ProposalAction(BaseModel):
 
 class InitRequest(BaseModel):
     project_path: str
+    tracked_branch: Optional[str] = None
 
 
 # ── Routes ──────────────────────────────────────────────────────
@@ -167,19 +168,69 @@ async def init_project(req: InitRequest):
     config = OrchestraConfig(
         project_dir=project_dir,
         orchestra_dir=orchestra_dir,
+        tracked_branch=req.tracked_branch,
     )
 
     orch = Orchestrator(config)
     await orch.init()
     set_orchestrator(orch)
 
-    # Start the orchestrator loop
     _orchestrator_task = asyncio.create_task(orch.run_loop())
 
     return {
         "status": "initialized",
         "project_path": str(project_dir),
+        "tracked_branch": req.tracked_branch,
     }
+
+
+class CheckoutRequest(BaseModel):
+    ref: str
+
+
+@app.post("/api/checkout")
+async def checkout_ref(req: CheckoutRequest):
+    """Checkout a commit or branch. Will fail if working tree has changes."""
+    orch = _orch()
+    ok, msg = await orch.worktree.checkout_ref(req.ref)
+    if not ok:
+        raise HTTPException(400, msg)
+    return {"status": "ok", "message": msg}
+
+
+@app.post("/api/git/fetch")
+async def fetch_remote():
+    """Fetch remote refs and tags."""
+    orch = _orch()
+    ok = await orch.worktree.fetch_remote()
+    return {"fetched": ok}
+
+
+class TrackedBranchUpdate(BaseModel):
+    branch: Optional[str] = None
+
+
+@app.put("/api/tracked-branch")
+async def set_tracked_branch(req: TrackedBranchUpdate):
+    """Update the tracked branch. If provided, immediately fetches and checks out."""
+    orch = _orch()
+    orch.config.tracked_branch = req.branch
+    if req.branch:
+        await orch.worktree.fetch_remote()
+        ok, msg = await orch.worktree.checkout_branch_latest(req.branch)
+        if not ok:
+            return {"status": "set", "checkout": "failed", "message": msg}
+        return {"status": "set", "checkout": "ok", "message": msg}
+    return {"status": "cleared"}
+
+
+@app.get("/api/tracked-branch")
+async def get_tracked_branch():
+    """Get current tracked branch."""
+    if not _is_initialized():
+        return {"branch": None}
+    orch = _orch()
+    return {"branch": orch.config.tracked_branch}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -249,7 +300,7 @@ async def get_graph():
     branches = await orch.worktree.list_branches()
 
     # Git commit log for the graph
-    commits = await orch.worktree.get_log_graph(max_count=40)
+    commits = await orch.worktree.get_log_graph(max_count=80)
 
     return {"nodes": nodes, "edges": edges, "branches": branches, "commits": commits,
             "proposals": [

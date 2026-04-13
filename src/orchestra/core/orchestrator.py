@@ -45,7 +45,8 @@ class OrchestraConfig:
     claude_cmd: str = "claude"
     max_turns: int = 50
     model: str = "sonnet"
-    auto_accept: bool = False  # pass_whatever mode: auto-accept after FI
+    auto_accept: bool = False
+    tracked_branch: Optional[str] = None  # auto-checkout to latest on startup
 
 
 class Orchestrator:
@@ -74,6 +75,18 @@ class Orchestrator:
         self.context.init()
         await self.worktree.ensure_repo()
         await self.task_queue.init()
+
+        # Auto-fetch and checkout tracked branch if configured
+        if self.config.tracked_branch:
+            log.info("Fetching remote and checking out tracked branch: %s",
+                     self.config.tracked_branch)
+            fetched = await self.worktree.fetch_remote()
+            if fetched:
+                ok, msg = await self.worktree.checkout_branch_latest(
+                    self.config.tracked_branch
+                )
+                log.info("Tracked branch checkout: %s (%s)", ok, msg)
+
         log.info("Orchestra initialized at %s", self.config.orchestra_dir)
 
     async def close(self) -> None:

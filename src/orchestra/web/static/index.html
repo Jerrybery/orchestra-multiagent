@@ -27,6 +27,16 @@
 
     <div id="setup-info" class="setup-info hidden"></div>
 
+    <div class="setup-section">
+      <label>Tracked Branch (optional)</label>
+      <div class="path-input-row">
+        <input type="text" id="setup-tracked-branch" placeholder="main" />
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:4px">
+        每次启动时自动 fetch 并 checkout 到此分支的最新 commit
+      </div>
+    </div>
+
     <button id="btn-setup-init" class="btn btn-primary btn-lg" onclick="setupInit()">
       Initialize Orchestra
     </button>
@@ -64,6 +74,8 @@
       </div>
     </div>
     <button id="btn-discussions" class="btn" title="View tracked discussions">Discussions</button>
+    <button id="btn-git-fetch" class="btn" title="Fetch remote">↻ Fetch</button>
+    <button id="btn-tracked-branch" class="btn" title="Set tracked branch">分支: —</button>
     <button id="btn-switch" class="btn" title="Switch project">Switch Project</button>
     <button id="btn-submit" class="btn btn-primary">+ Submit Requirement</button>
   </div>
