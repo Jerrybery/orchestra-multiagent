@@ -28,6 +28,63 @@ class WorktreeManager:
         stdout, stderr = await proc.communicate()
         return proc.returncode, stdout.decode().strip(), stderr.decode().strip()
 
+    async def fetch_remote(self) -> bool:
+        """Fetch from origin, pruning stale refs."""
+        if not await self._has_remote():
+            return False
+        rc, _, err = await self._run("git", "fetch", "--all", "--prune", "--tags")
+        if rc != 0:
+            log.warning("git fetch failed: %s", err)
+            return False
+        return True
+
+    async def checkout_branch_latest(self, branch: str) -> tuple[bool, str]:
+        """Checkout a branch and fast-forward to the remote latest.
+
+        Returns (success, message). If working tree has uncommitted changes,
+        fails safely without losing work.
+        """
+        # Check for uncommitted changes
+        rc, out, _ = await self._run("git", "status", "--porcelain")
+        if rc == 0 and out.strip():
+            return False, f"working tree has uncommitted changes: {out[:200]}"
+
+        # Checkout branch (create local if only remote exists)
+        rc, _, err = await self._run("git", "checkout", branch)
+        if rc != 0:
+            # Try from remote
+            rc2, _, err2 = await self._run(
+                "git", "checkout", "-b", branch, f"origin/{branch}"
+            )
+            if rc2 != 0:
+                return False, f"checkout failed: {err or err2}"
+
+        # Fast-forward to origin/<branch> if remote exists
+        if await self._has_remote():
+            rc_ff, _, err_ff = await self._run(
+                "git", "merge", "--ff-only", f"origin/{branch}"
+            )
+            if rc_ff != 0:
+                log.info("ff-only merge skipped for %s: %s", branch, err_ff[:120])
+
+        rc, out, _ = await self._run("git", "rev-parse", "--short", "HEAD")
+        head = out.strip() if rc == 0 else "?"
+        return True, f"on {branch} @ {head}"
+
+    async def checkout_ref(self, ref: str) -> tuple[bool, str]:
+        """Checkout any commit/ref (detached HEAD). Fails if dirty."""
+        rc, out, _ = await self._run("git", "status", "--porcelain")
+        if rc == 0 and out.strip():
+            return False, f"working tree has uncommitted changes"
+
+        rc, _, err = await self._run("git", "checkout", ref)
+        if rc != 0:
+            return False, f"checkout failed: {err[:200]}"
+
+        rc, out, _ = await self._run("git", "rev-parse", "--short", "HEAD")
+        head = out.strip() if rc == 0 else "?"
+        return True, f"HEAD @ {head}"
+
     async def ensure_repo(self) -> None:
         """Ensure the repo directory is a git repository."""
         if not (self.repo_dir / ".git").exists():
@@ -258,9 +315,9 @@ class WorktreeManager:
         return commits
 
     async def get_log_graph(self, max_count: int = 50) -> list[dict]:
-        """Get git log with parent info for DAG rendering."""
+        """Get git log with parent info for DAG rendering. Includes remote branches."""
         rc, out, _ = await self._run(
-            "git", "log", "--all", f"--max-count={max_count}",
+            "git", "log", "--all", "--remotes", f"--max-count={max_count}",
             "--format=%H\t%P\t%h\t%s\t%an\t%cr\t%D",
             "--topo-order",
         )
@@ -275,6 +332,7 @@ class WorktreeManager:
             parents = parts[1].split() if parts[1] else []
             refs = parts[6].strip() if len(parts) > 6 else ""
             branch_refs = []
+            remote_refs = []
             is_head = False
             if refs:
                 for ref in refs.split(","):
@@ -285,7 +343,11 @@ class WorktreeManager:
                     if ref.startswith("HEAD -> "):
                         is_head = True
                         ref = ref[8:]
-                    if ref and not ref.startswith("tag:"):
+                    if not ref or ref.startswith("tag:"):
+                        continue
+                    if ref.startswith("origin/") or ref.startswith("remotes/"):
+                        remote_refs.append(ref)
+                    else:
                         branch_refs.append(ref)
 
             commits.append({
@@ -296,6 +358,7 @@ class WorktreeManager:
                 "author": parts[4] if len(parts) > 4 else "",
                 "date": parts[5] if len(parts) > 5 else "",
                 "branches": branch_refs,
+                "remote_branches": remote_refs,
                 "is_head": is_head,
             })
         return commits

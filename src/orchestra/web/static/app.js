@@ -369,40 +369,53 @@ function renderGraph() {
     // Inner filled circle (merge commits slightly larger)
     g.appendChild(svgEl('circle', { r: nodeR, fill: c.color }));
 
-    // Branch labels as rounded pill badges, stacked vertically
-    if (c.branches.length) {
-      for (let i = 0; i < c.branches.length; i++) {
-        const pillG = svgEl('g', { transform: `translate(${nodeR + 10}, ${-8 + i * 18})` });
-        const brName = c.branches[i];
-        const brColor = layout.branchColorMap[brName] || '#8b949e';
-        // Pill background
-        const pillW = brName.length * 6.5 + 12;
-        pillG.appendChild(svgEl('rect', {
-          x: -4, y: -10, width: pillW, height: 16, rx: 8, ry: 8,
-          fill: brColor, opacity: 0.15, stroke: brColor, 'stroke-width': 0.5, 'stroke-opacity': 0.4,
-        }));
-        // Pill text
-        const textEl = svgEl('text', {
-          x: pillW / 2 - 4, y: 1, 'text-anchor': 'middle',
-          'font-size': 10, fill: brColor,
-          'font-family': 'monospace', 'font-weight': '500',
-        });
-        textEl.textContent = brName;
-        pillG.appendChild(textEl);
-        g.appendChild(pillG);
-      }
+    // Branch labels: local branches first, then remote branches (dashed border)
+    const allRefs = [
+      ...c.branches.map(n => ({ name: n, remote: false })),
+      ...((c.remote_branches || []).map(n => ({ name: n, remote: true }))),
+    ];
+    for (let i = 0; i < allRefs.length; i++) {
+      const pillG = svgEl('g', { transform: `translate(${nodeR + 10}, ${-8 + i * 18})` });
+      const { name: brName, remote } = allRefs[i];
+      // Strip origin/ prefix for color lookup; remote refs use gray-ish tone
+      const colorKey = brName.replace(/^(origin|remotes\/[^/]+)\//, '');
+      const brColor = remote ? '#8b949e' : (layout.branchColorMap[colorKey] || '#8b949e');
+      const pillW = brName.length * 6.5 + 12;
+      pillG.appendChild(svgEl('rect', {
+        x: -4, y: -10, width: pillW, height: 16, rx: 8, ry: 8,
+        fill: brColor, opacity: remote ? 0.08 : 0.15,
+        stroke: brColor, 'stroke-width': 0.5, 'stroke-opacity': 0.4,
+        'stroke-dasharray': remote ? '3 2' : 'none',
+      }));
+      const textEl = svgEl('text', {
+        x: pillW / 2 - 4, y: 1, 'text-anchor': 'middle',
+        'font-size': 10, fill: brColor,
+        'font-family': 'monospace', 'font-weight': '500',
+        'font-style': remote ? 'italic' : 'normal',
+      });
+      textEl.textContent = brName;
+      pillG.appendChild(textEl);
+      g.appendChild(pillG);
     }
 
     // Hover tooltip
+    g.style.cursor = 'pointer';
     g.addEventListener('mouseenter', (e) => {
       const refs = c.branches.length ? `<br><b>${c.branches.join(', ')}</b>` : '';
-      showTooltip(e, `<b>${c.short}</b> ${esc(c.message)}${refs}<br><span style="opacity:0.6">${c.author} · ${c.date}</span>`);
+      const remotes = (c.remote_branches && c.remote_branches.length)
+        ? `<br><span style="color:#8b949e">${c.remote_branches.join(', ')}</span>` : '';
+      showTooltip(e, `<b>${c.short}</b> ${esc(c.message)}${refs}${remotes}<br><span style="opacity:0.6">${c.author} · ${c.date}</span><br><span style="color:#58a6ff;font-size:10px">点击 checkout 到此 commit</span>`);
     });
     g.addEventListener('mousemove', (e) => {
       tooltipEl.style.left = (e.clientX + 12) + 'px';
       tooltipEl.style.top = (e.clientY + 12) + 'px';
     });
     g.addEventListener('mouseleave', hideTooltip);
+    g.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideTooltip();
+      checkoutCommit(c.short);
+    });
 
     svg.appendChild(g);
   }
@@ -1113,10 +1126,11 @@ async function setupInit() {
   btn.textContent = 'Initializing...';
 
   try {
+    const trackedBranch = document.getElementById('setup-tracked-branch').value.trim() || null;
     const res = await fetch('/api/init', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project_path: path }),
+      body: JSON.stringify({ project_path: path, tracked_branch: trackedBranch }),
     });
 
     if (!res.ok) {
@@ -1153,12 +1167,92 @@ function startDashboard() {
   fetchTrackingStatus();
   fetchIssues();
   fetchDrafts();
+  fetchTrackedBranch();
   setInterval(fetchAgents, 5000);
   setInterval(fetchGraph, 10000);
   setInterval(fetchDrafts, 10000);
   setInterval(() => { if (document.querySelector('.log-tab[data-tab="issues"].active')) fetchIssues(); }, 30000);
   connectSSE();
 }
+
+// ── Tracked Branch / Git ──────────────────────────────────────
+
+let currentTrackedBranch = null;
+
+async function fetchTrackedBranch() {
+  try {
+    const res = await fetch('/api/tracked-branch');
+    if (!res.ok) return;
+    const data = await res.json();
+    currentTrackedBranch = data.branch;
+    updateTrackedBranchBtn();
+  } catch (e) {}
+}
+
+function updateTrackedBranchBtn() {
+  const btn = document.getElementById('btn-tracked-branch');
+  if (!btn) return;
+  btn.textContent = `分支: ${currentTrackedBranch || '—'}`;
+  btn.style.borderColor = currentTrackedBranch ? 'var(--c-implemented)' : '';
+  btn.style.color = currentTrackedBranch ? 'var(--c-implemented)' : '';
+}
+
+async function promptTrackedBranch() {
+  const current = currentTrackedBranch || 'main';
+  const input = prompt('输入要跟踪的分支 (留空清除):', current);
+  if (input === null) return;
+  const branch = input.trim() || null;
+
+  try {
+    const res = await fetch('/api/tracked-branch', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branch }),
+    });
+    const data = await res.json();
+    currentTrackedBranch = branch;
+    updateTrackedBranchBtn();
+    if (data.message) addLogEntry('tracked_branch', data.message);
+    await fetchGraph();
+  } catch (e) {
+    alert('设置失败: ' + e.message);
+  }
+}
+
+async function gitFetch() {
+  const btn = document.getElementById('btn-git-fetch');
+  if (btn) { btn.textContent = '↻ Fetching...'; btn.disabled = true; }
+  try {
+    await fetch('/api/git/fetch', { method: 'POST' });
+    addLogEntry('git_fetch', '已从 origin 拉取最新提交');
+    await fetchGraph();
+  } catch (e) {}
+  if (btn) { btn.textContent = '↻ Fetch'; btn.disabled = false; }
+}
+
+async function checkoutCommit(ref) {
+  if (!confirm(`Checkout 到 ${ref}? 如果工作区有未提交修改会失败。`)) return;
+  try {
+    const res = await fetch('/api/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert('Checkout 失败: ' + (data.detail || 'unknown'));
+      return;
+    }
+    addLogEntry('checkout', data.message);
+    await fetchGraph();
+  } catch (e) {
+    alert('Checkout 失败: ' + e.message);
+  }
+}
+
+// Wire up buttons
+document.getElementById('btn-tracked-branch').addEventListener('click', promptTrackedBranch);
+document.getElementById('btn-git-fetch').addEventListener('click', gitFetch);
 
 // ── Panel Resizers ─────────────────────────────────────────────
 
