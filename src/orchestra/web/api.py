@@ -795,9 +795,10 @@ async def review_draft(draft_id: int, action: DraftAction):
         raise HTTPException(400, f"Draft is already {draft.status}")
 
     if action.action == "approve":
-        if not orch.tracker:
-            raise HTTPException(400, "Tracker not running")
-        ok = await orch.tracker.post_approved_draft(draft_id)
+        body = draft.body + "\n\n---\n*Orchestra Discussion Analyst*"
+        ok = await orch.github.post_issue_comment(draft.target_issue, body)
+        if ok:
+            await orch.task_queue.update_draft_status(draft_id, "posted")
         return {"status": "posted" if ok else "failed"}
     elif action.action == "reject":
         await orch.task_queue.update_draft_status(draft_id, "rejected")
