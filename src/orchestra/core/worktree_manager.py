@@ -71,11 +71,44 @@ class WorktreeManager:
         head = out.strip() if rc == 0 else "?"
         return True, f"on {branch} @ {head}"
 
-    async def checkout_ref(self, ref: str) -> tuple[bool, str]:
-        """Checkout any commit/ref (detached HEAD). Fails if dirty."""
+    async def get_working_tree_status(self) -> dict:
+        """Return working tree status: dirty files and unpushed commits."""
+        result: dict = {"dirty": False, "files": [], "unpushed_commits": []}
+
+        # Dirty files
         rc, out, _ = await self._run("git", "status", "--porcelain")
         if rc == 0 and out.strip():
-            return False, f"working tree has uncommitted changes"
+            result["dirty"] = True
+            result["files"] = [line.strip() for line in out.splitlines() if line.strip()]
+
+        # Unpushed commits (local commits not on remote)
+        if await self._has_remote():
+            rc, out, _ = await self._run(
+                "git", "log", "--oneline", "@{upstream}..HEAD"
+            )
+            if rc == 0 and out.strip():
+                result["unpushed_commits"] = [
+                    line.strip() for line in out.splitlines() if line.strip()
+                ]
+
+        return result
+
+    async def checkout_ref(self, ref: str, force: bool = False) -> tuple[bool, str]:
+        """Checkout any commit/ref. If force=True, discard local changes."""
+        status = await self.get_working_tree_status()
+
+        if (status["dirty"] or status["unpushed_commits"]) and not force:
+            details = []
+            if status["files"]:
+                details.append(f"modified files: {', '.join(status['files'][:5])}")
+            if status["unpushed_commits"]:
+                details.append(f"unpushed commits: {len(status['unpushed_commits'])}")
+            return False, f"dirty|{'; '.join(details)}"
+
+        if force:
+            # Discard uncommitted changes
+            await self._run("git", "checkout", ".")
+            await self._run("git", "clean", "-fd")
 
         rc, _, err = await self._run("git", "checkout", ref)
         if rc != 0:
