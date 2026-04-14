@@ -155,6 +155,18 @@ class IssueTracker:
             self._trees[disc.root_issue] = tree
             log.info("Restored discussion tree #%d (%d nodes)", disc.root_issue, len(tree.nodes))
 
+            # Emit restore event so frontend shows the tracked tree
+            await self._emit("discussion_restored", {
+                "root_issue": disc.root_issue,
+                "title": disc.title,
+                "status": disc.status,
+                "issue_count": len(tree.nodes),
+                "issues": [
+                    {"number": n, "title": nd.title, "parent": nd.parent_issue}
+                    for n, nd in tree.nodes.items()
+                ],
+            })
+
     # ── Poll Cycle ─────────────────────────────────────────
 
     async def _poll_cycle(self):

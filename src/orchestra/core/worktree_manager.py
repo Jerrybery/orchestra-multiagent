@@ -41,13 +41,13 @@ class WorktreeManager:
     async def checkout_branch_latest(self, branch: str) -> tuple[bool, str]:
         """Checkout a branch and fast-forward to the remote latest.
 
-        Returns (success, message). If working tree has uncommitted changes,
-        fails safely without losing work.
+        Returns (success, message). Logs a warning if dirty but proceeds
+        with checkout (generated files like .orchestra/ and prisma/ are common).
         """
-        # Check for uncommitted changes
         rc, out, _ = await self._run("git", "status", "--porcelain")
         if rc == 0 and out.strip():
-            return False, f"working tree has uncommitted changes: {out[:200]}"
+            log.warning("Working tree has changes during tracked branch checkout: %s",
+                        out[:200])
 
         # Checkout branch (create local if only remote exists)
         rc, _, err = await self._run("git", "checkout", branch)

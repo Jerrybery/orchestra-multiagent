@@ -1008,7 +1008,8 @@ function connectSSE() {
       fetchAgents();
     }
 
-    if (['discussion_discovered','discussion_commented','discussion_ready','discussion_status_changed'
+    if (['discussion_discovered','discussion_commented','discussion_ready','discussion_status_changed',
+         'discussion_restored','discussion_child_found','discussion_submitted_as_idea'
          ].includes(event) && discussionsPanelOpen) {
       fetchDiscussions();
     }
