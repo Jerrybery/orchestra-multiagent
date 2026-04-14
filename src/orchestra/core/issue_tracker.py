@@ -37,6 +37,9 @@ SPAWN_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# General #N issue reference pattern
+ISSUE_REF_PATTERN = re.compile(r'(?<!\w)#(\d+)\b')
+
 
 @dataclass
 class WatchConfig:
@@ -239,6 +242,8 @@ class IssueTracker:
         nodes_before = len(tree.nodes)
         new_refs: list[tuple[int, int]] = []  # (child_num, parent_num)
 
+        seen_refs: set[int] = set()  # dedup across sources
+
         for num, node in list(tree.nodes.items()):
             # From timeline cross-references
             timeline = await self.github.get_issue_timeline(num)
@@ -246,17 +251,19 @@ class IssueTracker:
                 if event.get("event") == "cross-referenced":
                     source = event.get("source", {}).get("issue", {})
                     ref_num = source.get("number")
-                    if ref_num and ref_num not in tree.nodes:
+                    if ref_num and ref_num not in tree.nodes and ref_num not in seen_refs:
                         new_refs.append((ref_num, num))
+                        seen_refs.add(ref_num)
 
-            # From spawn patterns in body + comments
+            # From all #N references in body + comments
             all_text = node.body + " " + " ".join(
                 c.get("body", "") for c in node.comments
             )
-            for match in SPAWN_PATTERNS.finditer(all_text):
+            for match in ISSUE_REF_PATTERN.finditer(all_text):
                 ref_num = int(match.group(1))
-                if ref_num not in tree.nodes:
+                if ref_num not in tree.nodes and ref_num not in seen_refs:
                     new_refs.append((ref_num, num))
+                    seen_refs.add(ref_num)
 
         # Fetch and register new children
         for ref_num, parent_num in new_refs:
@@ -517,6 +524,35 @@ class IssueTracker:
                 await self.task_queue.update_discussion_issue(
                     issue_num, snapshot=summary,
                 )
+
+        # Track linked issues discovered by the agent
+        linked = parsed.get("linked_issues", [])
+        for ref_num in linked:
+            if not isinstance(ref_num, int) or ref_num in tree.nodes:
+                continue
+            issue = await self.github.get_issue(ref_num)
+            if not issue or issue.get("state") == "CLOSED":
+                continue
+            if len(tree.nodes) >= self.config.max_issues_per_tree:
+                break
+            tree.nodes[ref_num] = TrackedNode(
+                issue_number=ref_num,
+                title=issue["title"],
+                body=issue.get("body", ""),
+                parent_issue=tree.root_issue,
+            )
+            await self.task_queue.upsert_discussion_issue(
+                tree.root_issue, ref_num, issue["title"],
+                parent_issue=tree.root_issue, body=issue.get("body", ""),
+            )
+            log.info("Agent discovered linked issue #%d in tree #%d", ref_num, tree.root_issue)
+            await self._emit("discussion_child_found", {
+                "root": tree.root_issue,
+                "child": ref_num,
+                "parent": tree.root_issue,
+                "title": issue["title"],
+                "source": "agent",
+            })
 
         # Save overall analysis summary
         overall_summary = parsed.get("summary", "")

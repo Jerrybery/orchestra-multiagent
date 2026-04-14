@@ -41,17 +41,28 @@
 - `converging`：各子 issue 方向已明确，细节仍在完善
 - `ready`：所有子 issue 已达成共识，范围清晰，可以进入实施
 
+## 关联 issue 发现
+
+在阅读讨论内容时，**主动识别所有被引用、关联或拆分出的子 issue**。这包括：
+- Body 或 comments 中用 `#N` 引用的其他 issue
+- 讨论中提到的 "see also"、"related"、"拆分到"、"详见" 等关联
+- 任务列表（如 `- [ ] #42`）中引用的 issue
+- 讨论中隐含的依赖关系
+
+将发现的关联 issue 编号放入输出的 `linked_issues` 字段，系统会自动将这些 issue 纳入追踪。
+
 ## 输出格式
 
 你必须在回复的最后一行输出如下 JSON：
 
 ```
-ORCHESTRA_RESULT:{"comments": [{"issue_number": N, "body": "你的中文 markdown 评论"}], "snapshots": [{"issue_number": N, "summary": "该 issue 当前状态的一段话摘要"}], "summary": "整棵讨论树的综合分析摘要", "maturity": "watching|converging|ready", "requirement": "如果 maturity 为 ready，填写完整的结构化需求描述；否则为空字符串"}
+ORCHESTRA_RESULT:{"comments": [{"issue_number": N, "body": "你的 markdown 评论"}], "snapshots": [{"issue_number": N, "summary": "该 issue 当前状态的一段话摘要"}], "linked_issues": [N, N, ...], "summary": "整棵讨论树的综合分析摘要", "maturity": "watching|converging|ready", "requirement": "如果 maturity 为 ready，填写完整的结构化需求描述；否则为空字符串"}
 ```
 
 规则：
 - `comments` 数组可以为空（如果你确实没有新内容可以补充）
 - `snapshots` 必须覆盖讨论树中的**所有**被追踪 issue
+- `linked_issues` 列出你在讨论中发现的、但不在当前追踪树中的 issue 编号
 - `summary` 是你对整棵讨论树当前状态的总体评估
 - `requirement` 必须是一个完整的、结构化的需求描述，汇总所有子 issue 的决策 —— 仅在 maturity 为 `ready` 时填写
 - 需求描述需要详细到足以让 Head Leader 分解为可实施的特性
