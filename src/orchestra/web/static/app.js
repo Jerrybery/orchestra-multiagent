@@ -2030,6 +2030,29 @@ async function submitDiscussion(rootIssue) {
   }
 }
 
+async function submitDiscussionAsIdea(rootIssue) {
+  const textarea = document.getElementById(`disc-idea-instruction-${rootIssue}`);
+  const instruction = textarea ? textarea.value.trim() : '';
+
+  try {
+    const res = await fetch(`/api/discussions/${rootIssue}/idea`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instruction }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      addLogEntry('idea_from_discussion', `Discussion #${rootIssue} → Idea (proposal: ${data.proposal_id})`);
+      fetchDiscussionDetail(rootIssue);
+      fetchGraph();
+    } else {
+      alert('创建失败: ' + (data.detail || 'unknown'));
+    }
+  } catch (e) {
+    alert('创建失败: ' + e.message);
+  }
+}
+
 function renderDiscussions(discussions) {
   const contentEl = document.getElementById('detail-content');
 
@@ -2071,6 +2094,16 @@ function renderDiscussions(discussions) {
         html += `<div style="font-size:11px;color:var(--text-dim);padding:4px 0">...and ${disc.issues.length - 5} more</div>`;
       }
       html += '</div>';
+    }
+
+    // Quick action: create idea directly from list
+    if (status !== 'submitted') {
+      html += `<div style="padding:4px 0">
+        <button class="btn btn-primary" style="font-size:11px;padding:3px 10px"
+                onclick="event.stopPropagation(); submitDiscussionAsIdea(${rootNum})">
+          创建 Idea
+        </button>
+      </div>`;
     }
 
     html += '</div>';
@@ -2132,12 +2165,26 @@ function renderDiscussionDetail(tree) {
     html += '</div>';
   }
 
-  // Submit button for ready discussions
-  if (status === 'ready') {
+  // Action buttons
+  if (status !== 'submitted') {
     const rootIssue = tree.root_issue || '';
-    html += `<button class="btn btn-primary disc-submit-btn" onclick="submitDiscussion('${esc(String(rootIssue))}')">
-      Submit for Implementation
-    </button>`;
+    html += `<div class="detail-section disc-idea-section">
+      <h3>创建 Idea</h3>
+      <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">
+        将此讨论树的所有 issue 内容、评论和分析汇总后提交给 Head Leader 进行需求分解
+      </p>
+      <textarea id="disc-idea-instruction-${rootIssue}" class="disc-idea-input"
+                placeholder="附加说明（可选）：例如优先实现哪个部分、需要注意什么..." rows="2"></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn btn-primary" onclick="submitDiscussionAsIdea(${rootIssue})">
+          创建 Idea (${tree.issues ? tree.issues.length : 0} 个 issue)
+        </button>`;
+    if (status === 'ready') {
+      html += `<button class="btn" onclick="submitDiscussion('${esc(String(rootIssue))}')">
+          仅提交分析摘要
+        </button>`;
+    }
+    html += `</div></div>`;
   }
 
   // Back link
