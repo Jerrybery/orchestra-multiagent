@@ -186,14 +186,31 @@ async def init_project(req: InitRequest):
 
 class CheckoutRequest(BaseModel):
     ref: str
+    force: bool = False
+
+
+@app.get("/api/git/status")
+async def get_git_status():
+    """Get working tree status: dirty files and unpushed commits."""
+    orch = _orch()
+    return await orch.worktree.get_working_tree_status()
 
 
 @app.post("/api/checkout")
 async def checkout_ref(req: CheckoutRequest):
-    """Checkout a commit or branch. Will fail if working tree has changes."""
+    """Checkout a commit or branch. Returns dirty status if not forced."""
     orch = _orch()
-    ok, msg = await orch.worktree.checkout_ref(req.ref)
+    ok, msg = await orch.worktree.checkout_ref(req.ref, force=req.force)
     if not ok:
+        if msg.startswith("dirty|"):
+            # Return structured info so frontend can show details and ask user
+            status = await orch.worktree.get_working_tree_status()
+            return {
+                "status": "dirty",
+                "files": status["files"],
+                "unpushed_commits": status["unpushed_commits"],
+                "ref": req.ref,
+            }
         raise HTTPException(400, msg)
     return {"status": "ok", "message": msg}
 

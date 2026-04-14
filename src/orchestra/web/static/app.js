@@ -1231,16 +1231,49 @@ async function gitFetch() {
 }
 
 async function checkoutCommit(ref) {
-  if (!confirm(`Checkout 到 ${ref}? 如果工作区有未提交修改会失败。`)) return;
   try {
     const res = await fetch('/api/checkout', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ref }),
+      body: JSON.stringify({ ref, force: false }),
     });
     const data = await res.json();
-    if (!res.ok) {
-      alert('Checkout 失败: ' + (data.detail || 'unknown'));
+
+    if (data.status === 'dirty') {
+      // Show details and ask user whether to force
+      let msg = `工作区有未保存的变更，切换到 ${ref} 需要放弃这些修改：\n\n`;
+      if (data.files && data.files.length) {
+        msg += '修改的文件:\n' + data.files.slice(0, 10).map(f => '  ' + f).join('\n');
+        if (data.files.length > 10) msg += `\n  ... 还有 ${data.files.length - 10} 个文件`;
+        msg += '\n\n';
+      }
+      if (data.unpushed_commits && data.unpushed_commits.length) {
+        msg += '未推送的 commit:\n' + data.unpushed_commits.slice(0, 5).map(c => '  ' + c).join('\n');
+        if (data.unpushed_commits.length > 5) msg += `\n  ... 还有 ${data.unpushed_commits.length - 5} 个`;
+        msg += '\n\n';
+      }
+      msg += '确认放弃所有本地修改并切换？';
+
+      if (!confirm(msg)) return;
+
+      // Force checkout
+      const res2 = await fetch('/api/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ref, force: true }),
+      });
+      const data2 = await res2.json();
+      if (!res2.ok || data2.status !== 'ok') {
+        alert('Checkout 失败: ' + (data2.detail || data2.message || 'unknown'));
+        return;
+      }
+      addLogEntry('checkout', `[force] ${data2.message}`);
+      await fetchGraph();
+      return;
+    }
+
+    if (!res.ok || data.status !== 'ok') {
+      alert('Checkout 失败: ' + (data.detail || data.message || 'unknown'));
       return;
     }
     addLogEntry('checkout', data.message);
