@@ -41,6 +41,69 @@ class GitHubManager:
         self._available = rc == 0
         return self._available
 
+    # ── Pull Requests ──────────────────────────────────────────
+
+    async def list_prs(self, state: str = "open", limit: int = 30) -> list[dict]:
+        """List pull requests."""
+        if not await self.is_available():
+            return []
+        rc, out, _ = await self._run(
+            "gh", "pr", "list",
+            "--state", state,
+            "--json", "number,title,body,labels,state,updatedAt,createdAt,author,comments,url,headRefName,baseRefName",
+            "--limit", str(limit),
+        )
+        if rc != 0 or not out:
+            return []
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError:
+            return []
+
+    async def get_pr(self, pr_number: int) -> Optional[dict]:
+        """Get a PR with details and comments (reviews + issue comments)."""
+        if not await self.is_available():
+            return None
+        rc, out, _ = await self._run(
+            "gh", "pr", "view", str(pr_number),
+            "--json", "number,title,body,labels,comments,reviews,state,createdAt,updatedAt,headRefName,baseRefName,author",
+        )
+        if rc != 0 or not out:
+            return None
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError:
+            return None
+
+    async def get_pr_comments(self, pr_number: int) -> list[dict]:
+        """Get all comments on a PR (issue comments + review comments)."""
+        pr = await self.get_pr(pr_number)
+        if not pr:
+            return []
+        comments = pr.get("comments", [])
+        # Also include review bodies as comments
+        for review in pr.get("reviews", []):
+            body = review.get("body", "").strip()
+            if body:
+                comments.append({
+                    "author": review.get("author", {}),
+                    "body": body,
+                    "createdAt": review.get("submittedAt", ""),
+                    "id": review.get("id", ""),
+                })
+        return comments
+
+    async def post_pr_comment(self, pr_number: int, body: str) -> bool:
+        """Post a comment on a PR."""
+        if not await self.is_available():
+            return False
+        rc, _, err = await self._run(
+            "gh", "pr", "comment", str(pr_number), "--body", body,
+        )
+        if rc != 0:
+            log.error("Failed to comment on PR #%d: %s", pr_number, err)
+        return rc == 0
+
     # ── Issues ──────────────────────────────────────────────────
 
     async def create_idea_issue(self, title: str, body: str) -> Optional[dict]:

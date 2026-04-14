@@ -44,7 +44,8 @@ ISSUE_REF_PATTERN = re.compile(r'(?<!\w)#(\d+)\b')
 @dataclass
 class WatchConfig:
     watch_labels: list[str] = field(default_factory=lambda: ["discuss"])
-    focus_issues: list[int] = field(default_factory=list)  # specific issue numbers to track
+    focus_issues: list[int] = field(default_factory=list)
+    watch_prs: bool = True  # also track open PRs
     poll_interval: int = 120
     auto_submit: bool = False
     max_depth: int = 3
@@ -62,6 +63,7 @@ class TrackedNode:
     comments: list[dict] = field(default_factory=list)
     last_comment_id: int = 0
     snapshot: str = ""
+    is_pr: bool = False  # True if this node is a pull request
 
 
 @dataclass
@@ -204,27 +206,29 @@ class IssueTracker:
 
     # ── Phase 1: Discover root issues ──────────────────────
 
-    async def _register_root(self, num: int, title: str, body: str = "") -> bool:
-        """Register a single issue as a discussion tree root. Returns True if new."""
+    async def _register_root(self, num: int, title: str, body: str = "",
+                              is_pr: bool = False) -> bool:
+        """Register a single issue/PR as a discussion tree root. Returns True if new."""
         if num in self._trees:
             return False
+        label = "PR" if is_pr else "Issue"
         tree = DiscussionTree(root_issue=num, title=title)
         tree.nodes[num] = TrackedNode(
-            issue_number=num, title=title, body=body,
+            issue_number=num, title=title, body=body, is_pr=is_pr,
         )
         self._trees[num] = tree
 
         await self.task_queue.upsert_discussion(num, title)
         await self.task_queue.upsert_discussion_issue(num, num, title, body=body)
 
-        log.info("Discovered discussion root: #%d %s", num, title)
+        log.info("Discovered %s root: #%d %s", label, num, title)
         await self._emit("discussion_discovered", {
-            "issue_number": num, "title": title,
+            "issue_number": num, "title": title, "is_pr": is_pr,
         })
         return True
 
     async def _discover_roots(self) -> set[int]:
-        """Discover root issues. Returns set of newly discovered root issue numbers."""
+        """Discover root issues and PRs. Returns set of newly discovered root numbers."""
         new_roots: set[int] = set()
 
         # By label
@@ -244,6 +248,17 @@ class IssueTracker:
             if issue:
                 if await self._register_root(
                     num, issue["title"], issue.get("body", ""),
+                ):
+                    new_roots.add(num)
+
+        # Open PRs
+        if self.config.watch_prs:
+            prs = await self.github.list_prs(state="open")
+            for pr in prs:
+                num = pr["number"]
+                if await self._register_root(
+                    num, f"[PR] {pr['title']}",
+                    pr.get("body", ""), is_pr=True,
                 ):
                     new_roots.add(num)
 
@@ -324,11 +339,14 @@ class IssueTracker:
     # ── Phase 3: Incremental comment fetching ──────────────
 
     async def _fetch_new_comments(self, tree: DiscussionTree) -> bool:
-        """Fetch new comments for all issues in tree. Returns True if any new."""
+        """Fetch new comments for all issues/PRs in tree. Returns True if any new."""
         has_new = False
 
         for num, node in tree.nodes.items():
-            comments = await self.github.get_issue_comments(num)
+            if node.is_pr:
+                comments = await self.github.get_pr_comments(num)
+            else:
+                comments = await self.github.get_issue_comments(num)
             if not comments:
                 continue
 
@@ -368,8 +386,9 @@ class IssueTracker:
         for num in sorted(tree.nodes):
             node = tree.nodes[num]
             parent = f" (from #{node.parent_issue})" if node.parent_issue else " (ROOT)"
+            kind = " [PR]" if node.is_pr else ""
             comment_count = len(node.comments)
-            lines.append(f"- #{num}: {node.title}{parent} [{comment_count} comments]")
+            lines.append(f"- #{num}: {node.title}{kind}{parent} [{comment_count} comments]")
         lines.append("")
 
         # Full content of each issue (with cycle protection)

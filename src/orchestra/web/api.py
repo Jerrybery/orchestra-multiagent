@@ -255,6 +255,28 @@ async def index():
     return (STATIC_DIR / "index.html").read_text()
 
 
+@app.get("/api/prs")
+async def get_prs(state: str = "open"):
+    """Fetch GitHub pull requests for the connected project."""
+    orch = _orch()
+    prs = await orch.github.list_prs(state=state)
+    return [
+        {
+            "number": p.get("number"),
+            "title": p.get("title", ""),
+            "url": p.get("url", ""),
+            "state": p.get("state", "open"),
+            "author": p.get("author", {}).get("login", "unknown"),
+            "head": p.get("headRefName", ""),
+            "base": p.get("baseRefName", ""),
+            "comment_count": len(p.get("comments", [])),
+            "created_at": p.get("createdAt", ""),
+            "updated_at": p.get("updatedAt", ""),
+        }
+        for p in prs
+    ]
+
+
 @app.get("/api/graph")
 async def get_graph():
     """Return the full DAG: requirements → tasks with deps and status."""
@@ -796,7 +818,10 @@ async def review_draft(draft_id: int, action: DraftAction):
 
     if action.action == "approve":
         body = draft.body + "\n\n---\n*Orchestra Discussion Analyst*"
+        # Try issue comment first, fall back to PR comment
         ok = await orch.github.post_issue_comment(draft.target_issue, body)
+        if not ok:
+            ok = await orch.github.post_pr_comment(draft.target_issue, body)
         if ok:
             await orch.task_queue.update_draft_status(draft_id, "posted")
         return {"status": "posted" if ok else "failed"}

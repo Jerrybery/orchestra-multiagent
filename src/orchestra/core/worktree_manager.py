@@ -133,14 +133,23 @@ class WorktreeManager:
             log.info("Initialized git repo at %s", self.repo_dir)
 
     def _branch_name(self, task_id: str, title: str = "") -> str:
-        """Generate branch name from task title, e.g. feat/001-keeper-app-scaffold."""
-        if title:
-            import re
-            # Slugify: lowercase, replace non-alphanum with hyphens, trim
-            slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:50]
-            num = task_id.replace("feat-", "")
-            return f"feat/{num}-{slug}"
-        return f"feat/{task_id}"
+        """Generate branch name from title, e.g. feat/user_name_url, bugfix/login_bug_fix."""
+        import re
+
+        if not title:
+            return f"feat/{task_id.replace('feat-', '')}"
+
+        lower = title.lower().strip()
+
+        # Detect type prefix from title keywords
+        prefix = "feat"
+        bug_words = ("fix", "bug", "修复", "修正", "错误", "问题", "crash", "broken")
+        if any(w in lower for w in bug_words):
+            prefix = "bugfix"
+
+        # Slugify: lowercase, replace non-alphanum with underscores, collapse, trim
+        slug = re.sub(r'[^a-z0-9]+', '_', lower).strip('_')[:50]
+        return f"{prefix}/{slug}"
 
     def get_branch_name(self, task_id: str) -> str:
         """Get the branch name for a task (from cache or fallback)."""
