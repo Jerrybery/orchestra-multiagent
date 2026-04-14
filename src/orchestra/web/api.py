@@ -709,6 +709,26 @@ async def submit_discussion(root_issue: int):
         raise HTTPException(400, str(e))
 
 
+class IdeaFromDiscussion(BaseModel):
+    instruction: str = ""
+
+
+@app.post("/api/discussions/{root_issue}/idea")
+async def submit_discussion_as_idea(root_issue: int, req: IdeaFromDiscussion):
+    """Submit a discussion tree as an idea to Head Leader, regardless of maturity.
+
+    Builds a full requirement from all issue bodies, comments, and analysis.
+    """
+    orch = _orch()
+    try:
+        proposal_id = await orch.submit_discussion_as_idea(
+            root_issue, extra_instruction=req.instruction,
+        )
+        return {"status": "submitted", "proposal_id": proposal_id}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 @app.post("/api/discussions/{issue_number}/analyze")
 async def analyze_issue_now(issue_number: int):
     """Immediately analyze an issue. Auto-starts tracker if not running."""

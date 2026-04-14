@@ -187,7 +187,6 @@ class Orchestrator:
         if tree.status != "ready":
             raise ValueError(f"Discussion #{root_issue} is '{tree.status}', not ready")
 
-        # Build requirement from last analysis
         tagged_req = (
             f"[From Discussion Tree #{tree.root_issue}: {tree.title}]\n"
             f"[Tracked issues: {', '.join(f'#{n}' for n in tree.all_issue_numbers)}]\n\n"
@@ -201,6 +200,77 @@ class Orchestrator:
         )
         tree.status = "submitted"
         await self.task_queue.update_discussion(root_issue, status="submitted")
+        return proposal_id
+
+    async def submit_discussion_as_idea(self, root_issue: int,
+                                         extra_instruction: str = "") -> str:
+        """Submit a discussion tree as an idea, regardless of maturity status.
+
+        Builds a full requirement from all issue bodies, comments, snapshots,
+        and agent analysis — gives HL the complete picture to decompose.
+        """
+        if not self.tracker:
+            raise ValueError("Tracker not running")
+        tree = self.tracker.get_tree(root_issue)
+        if not tree:
+            raise ValueError(f"Discussion #{root_issue} not found")
+
+        # Build comprehensive requirement from the full tree
+        parts = [
+            f"# Idea from Discussion Tree #{tree.root_issue}: {tree.title}",
+            f"Tracked issues: {', '.join(f'#{n}' for n in tree.all_issue_numbers)}",
+            "",
+        ]
+
+        # Include agent's analysis if available
+        if tree.last_analysis:
+            parts.append("## Discussion Analysis Summary")
+            parts.append(tree.last_analysis)
+            parts.append("")
+
+        # Include each issue's content and snapshots
+        parts.append("## Issue Details")
+        for num in sorted(tree.nodes):
+            node = tree.nodes[num]
+            parts.append(f"\n### Issue #{num}: {node.title}")
+            if node.body:
+                parts.append(node.body[:3000])
+            if node.snapshot:
+                parts.append(f"\n**Analyst snapshot:** {node.snapshot}")
+            # Include human comments (not bot's)
+            human_comments = [
+                c for c in node.comments
+                if "Orchestra Discussion Analyst" not in c.get("body", "")
+            ]
+            if human_comments:
+                parts.append(f"\n**Discussion ({len(human_comments)} comments):**")
+                for c in human_comments:
+                    author = c.get("author", {}).get("login", "?")
+                    parts.append(f"- @{author}: {c.get('body', '')[:800]}")
+
+        if extra_instruction:
+            parts.append(f"\n## Additional Instructions\n{extra_instruction}")
+
+        requirement = "\n".join(parts)
+
+        proposal_id = await self.submit_requirement(requirement)
+
+        await self.github.post_issue_comment(
+            tree.root_issue,
+            f"Discussion submitted as idea for implementation.\n"
+            f"Proposal: `{proposal_id}`\n"
+            f"Included issues: {', '.join(f'#{n}' for n in tree.all_issue_numbers)}",
+        )
+
+        tree.status = "submitted"
+        await self.task_queue.update_discussion(root_issue, status="submitted")
+
+        await self._emit("discussion_submitted_as_idea", {
+            "root_issue": root_issue,
+            "proposal_id": proposal_id,
+            "issue_count": len(tree.nodes),
+        })
+
         return proposal_id
 
     # ── Prompt Loading ──────────────────────────────────────────────

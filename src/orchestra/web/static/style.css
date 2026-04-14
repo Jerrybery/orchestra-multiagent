@@ -971,6 +971,25 @@ footer {
   margin-bottom: 6px;
 }
 
+.disc-idea-section {
+  border: 1px solid var(--c-implemented);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(63,185,80,0.04);
+}
+.disc-idea-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 8px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+}
+.disc-idea-input:focus { outline: none; border-color: var(--accent); }
+
 /* ── Draft Chat ─────────────────────────────────────────── */
 .draft-chat {
   margin-top: 8px;
