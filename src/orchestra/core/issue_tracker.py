@@ -172,11 +172,18 @@ class IssueTracker:
                     continue
 
                 has_new = await self._fetch_new_comments(tree)
+                is_new_root = root_num in new_roots
+                needs_initial_crawl = len(tree.nodes) == 1  # only root, never crawled
 
-                if has_new:
+                if has_new or is_new_root or needs_initial_crawl:
+                    nodes_before = len(tree.nodes)
                     await self._crawl_children(tree)
+                    # Fetch comments for newly discovered child issues
+                    if len(tree.nodes) > nodes_before:
+                        await self._fetch_new_comments(tree)
+                        has_new = True
 
-                if has_new or root_num in new_roots or not tree.last_analysis:
+                if has_new or is_new_root or not tree.last_analysis:
                     to_analyze.append(tree)
 
         # Run analysis outside the lock (long-running)
