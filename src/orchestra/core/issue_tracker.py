@@ -251,16 +251,17 @@ class IssueTracker:
                 ):
                     new_roots.add(num)
 
-        # Open PRs
+        # PRs with matching labels (same mechanism as issues)
         if self.config.watch_prs:
-            prs = await self.github.list_prs(state="open")
-            for pr in prs:
-                num = pr["number"]
-                if await self._register_root(
-                    num, f"[PR] {pr['title']}",
-                    pr.get("body", ""), is_pr=True,
-                ):
-                    new_roots.add(num)
+            for label in self.config.watch_labels:
+                prs = await self.github.list_prs_by_label(label)
+                for pr in prs:
+                    num = pr["number"]
+                    if await self._register_root(
+                        num, f"[PR] {pr['title']}",
+                        pr.get("body", ""), is_pr=True,
+                    ):
+                        new_roots.add(num)
 
         return new_roots
 
@@ -307,7 +308,7 @@ class IssueTracker:
                 continue
 
             issue = await self.github.get_issue(ref_num)
-            if not issue or issue.get("state") == "CLOSED":
+            if not issue:
                 continue
 
             tree.nodes[ref_num] = TrackedNode(
@@ -569,7 +570,7 @@ class IssueTracker:
             if not isinstance(ref_num, int) or ref_num in tree.nodes:
                 continue
             issue = await self.github.get_issue(ref_num)
-            if not issue or issue.get("state") == "CLOSED":
+            if not issue:
                 continue
             if len(tree.nodes) >= self.config.max_issues_per_tree:
                 break

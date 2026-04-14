@@ -256,8 +256,8 @@ async def index():
 
 
 @app.get("/api/prs")
-async def get_prs(state: str = "open"):
-    """Fetch GitHub pull requests for the connected project."""
+async def get_prs(state: str = "all"):
+    """Fetch GitHub pull requests (open/closed/merged/all)."""
     orch = _orch()
     prs = await orch.github.list_prs(state=state)
     return [
@@ -265,7 +265,8 @@ async def get_prs(state: str = "open"):
             "number": p.get("number"),
             "title": p.get("title", ""),
             "url": p.get("url", ""),
-            "state": p.get("state", "open"),
+            "state": p.get("state", "OPEN"),
+            "labels": [lb.get("name", "") for lb in p.get("labels", [])],
             "author": p.get("author", {}).get("login", "unknown"),
             "head": p.get("headRefName", ""),
             "base": p.get("baseRefName", ""),
