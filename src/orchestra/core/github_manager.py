@@ -60,6 +60,23 @@ class GitHubManager:
         except json.JSONDecodeError:
             return []
 
+    async def list_prs_by_label(self, label: str, state: str = "all") -> list[dict]:
+        """List PRs with a specific label (all states by default)."""
+        if not await self.is_available():
+            return []
+        rc, out, _ = await self._run(
+            "gh", "pr", "list",
+            "--label", label, "--state", state,
+            "--json", "number,title,body,labels,state,updatedAt,createdAt,author,comments,url,headRefName,baseRefName",
+            "--limit", "30",
+        )
+        if rc != 0 or not out:
+            return []
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError:
+            return []
+
     async def get_pr(self, pr_number: int) -> Optional[dict]:
         """Get a PR with details and comments (reviews + issue comments)."""
         if not await self.is_available():
