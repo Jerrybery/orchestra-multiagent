@@ -346,9 +346,12 @@ class IssueTracker:
         return "Orchestra Discussion Analyst" in body
 
     async def _fetch_new_comments(self, tree: DiscussionTree) -> bool:
-        """Fetch new comments for all issues/PRs. Ignores bot's own comments
-        so Orchestra doesn't re-trigger analysis on replies it just posted."""
-        has_new = False
+        """Fetch new comments for all issues/PRs.
+
+        Bot's own comments are STORED (for conversation context) but
+        do NOT trigger new analysis — only human activity does.
+        """
+        any_human_new = False
 
         for num, node in tree.nodes.items():
             if node.is_pr:
@@ -358,23 +361,27 @@ class IssueTracker:
             if not all_comments:
                 continue
 
-            # Filter out our own bot comments — they don't count as "new activity"
-            human_comments = [c for c in all_comments if not self._is_bot_comment(c)]
+            old_total = len(node.comments)
+            # Always store all comments (bot + human) for context continuity
+            if len(all_comments) > old_total:
+                new_comments = all_comments[old_total:]
+                node.comments = all_comments
+                node.last_comment_id = len(all_comments)
 
-            # Count-based tracking on human-authored comments only
-            old_count = node.last_comment_id
-            if len(human_comments) > old_count:
-                new_comments = human_comments[old_count:]
-                node.comments.extend(new_comments)
-                node.last_comment_id = len(human_comments)
-                has_new = True
+                # Trigger analysis only if any NEW comment is from a human
+                has_human = any(not self._is_bot_comment(c) for c in new_comments)
+                if has_human:
+                    any_human_new = True
 
                 await self.task_queue.update_discussion_issue(
                     num, last_comment_id=node.last_comment_id,
                 )
-                log.info("Fetched %d new human comments on #%d", len(new_comments), num)
+                log.info(
+                    "Fetched %d new comments on #%d (human activity: %s)",
+                    len(new_comments), num, has_human,
+                )
 
-        return has_new
+        return any_human_new
 
     # ── Phase 4: Build tree context for agent ──────────────
 
@@ -420,17 +427,20 @@ class IssueTracker:
             lines.append(f"{pfx}{node.body[:3000]}")
 
             if node.comments:
-                # Filter out bot's own comments to avoid self-referential loop
-                human_comments = [
-                    c for c in node.comments
-                    if "Orchestra Discussion Analyst" not in c.get("body", "")
-                ]
-                if human_comments:
-                    lines.append(f"{pfx}### Comments ({len(human_comments)})")
-                    for c in human_comments:
-                        author = c.get("author", {}).get("login", "unknown")
-                        body = c.get("body", "")[:1000]
-                        lines.append(f"{pfx}- **@{author}**: {body}")
+                # Include ALL comments — bot messages are tagged so the agent
+                # knows what it already said. This preserves conversation context.
+                lines.append(f"{pfx}### Comments ({len(node.comments)})")
+                for c in node.comments:
+                    is_bot = "Orchestra Discussion Analyst" in c.get("body", "")
+                    author = c.get("author", {}).get("login", "unknown")
+                    tag = " [你之前的发言]" if is_bot else ""
+                    body = c.get("body", "")[:1000]
+                    # Strip the bot signature to keep context clean
+                    if is_bot:
+                        body = body.replace(
+                            "\n\n---\n*Orchestra Discussion Analyst*", ""
+                        ).strip()
+                    lines.append(f"{pfx}- **@{author}{tag}**: {body}")
 
             # Render children
             children = [n for n, nd in tree.nodes.items() if nd.parent_issue == num]
