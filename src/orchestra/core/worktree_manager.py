@@ -162,12 +162,15 @@ class WorktreeManager:
             await self._run("git", "commit", "-m", "Initial commit")
             log.info("Initialized git repo at %s", self.repo_dir)
 
-    def _branch_name(self, task_id: str, title: str = "") -> str:
-        """Generate branch name from title, e.g. feat/user_name_url, bugfix/login_bug_fix."""
+    def _branch_name(self, task_id: str, title: str = "",
+                     source_issue: Optional[int] = None) -> str:
+        """Generate branch name from title, e.g. feat/user_name_url, bugfix/login_bug_fix.
+        If source_issue is provided, prefix with issue number: feat/42_user_name_url."""
         import re
 
         if not title:
-            return f"feat/{task_id.replace('feat-', '')}"
+            base = task_id.replace('feat-', '')
+            return f"feat/{source_issue}_{base}" if source_issue else f"feat/{base}"
 
         lower = title.lower().strip()
 
@@ -177,17 +180,20 @@ class WorktreeManager:
         if any(w in lower for w in bug_words):
             prefix = "bugfix"
 
-        # Slugify: lowercase, replace non-alphanum with underscores, collapse, trim
         slug = re.sub(r'[^a-z0-9]+', '_', lower).strip('_')[:50]
+
+        if source_issue:
+            return f"{prefix}/{source_issue}_{slug}"
         return f"{prefix}/{slug}"
 
     def get_branch_name(self, task_id: str) -> str:
         """Get the branch name for a task (from cache or fallback)."""
         return self._branch_cache.get(task_id, f"feat/{task_id}")
 
-    async def create_worktree(self, task_id: str, title: str = "") -> Path:
+    async def create_worktree(self, task_id: str, title: str = "",
+                               source_issue: Optional[int] = None) -> Path:
         """Create a new worktree + branch for a feature task."""
-        branch = self._branch_name(task_id, title)
+        branch = self._branch_name(task_id, title, source_issue=source_issue)
         self._branch_cache[task_id] = branch
         wt_path = self.worktrees_dir / task_id
 
