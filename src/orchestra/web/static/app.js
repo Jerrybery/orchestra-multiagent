@@ -695,12 +695,19 @@ async function onNodeClick(node) {
 
   let html = '';
 
+  const sourceIssueLink = task.source_issue
+    ? `<a href="#" onclick="event.preventDefault()" style="color:var(--accent);font-family:var(--font-mono)">#${task.source_issue}</a>`
+    : '-';
   html += `<div class="detail-section">
     <h3>Info</h3>
     <dl class="detail-meta">
       <dt>Status</dt>
       <dd><span class="status-badge" style="background:${STATUS_COLORS[task.status]}20;color:${STATUS_COLORS[task.status]}">${task.status}</span></dd>
-      <dt>Branch</dt><dd>${task.branch || '-'}</dd>
+      <dt>Branch</dt><dd>
+        <span style="font-family:var(--font-mono)">${task.branch || '-'}</span>
+        ${task.branch ? `<button class="btn btn-compact" style="margin-left:6px" onclick="promptRenameBranch('${task.id}', '${esc(task.branch)}')">Rename</button>` : ''}
+      </dd>
+      <dt>Source issue</dt><dd>${sourceIssueLink}</dd>
       <dt>Agent</dt><dd>${task.assigned_to || '-'}</dd>
       <dt>Dependencies</dt><dd>${task.depends_on.length ? task.depends_on.join(', ') : 'None'}</dd>
     </dl>
@@ -736,13 +743,21 @@ async function onNodeClick(node) {
 
   if (task.status === 'review') {
     html += `<div class="detail-section">
-      <h3>Review Actions</h3>
+      <h3>Accept Options</h3>
+      <label class="checkbox-label" style="font-size:12.5px;margin-bottom:6px">
+        <input type="checkbox" id="accept-push-${task.id}" checked>
+        Push branch to remote
+      </label>
+      <label class="checkbox-label" style="font-size:12.5px;margin-bottom:10px">
+        <input type="checkbox" id="accept-pr-${task.id}" checked>
+        Create GitHub PR
+      </label>
       <div class="review-actions">
-        <button class="btn btn-primary" onclick="reviewTask('${task.id}', 'accept')">Accept & Merge</button>
+        <button class="btn btn-primary" onclick="reviewTaskAccept('${task.id}')">Accept</button>
         <button class="btn btn-reject" onclick="showReject('${task.id}')">Reject</button>
       </div>
-      <div id="reject-form-${task.id}" style="display:none;margin-top:8px">
-        <textarea id="reject-reason-${task.id}" rows="3" placeholder="Rejection reason..."></textarea>
+      <div id="reject-form-${task.id}" style="display:none;margin-top:10px">
+        <textarea id="reject-reason-${task.id}" rows="3" placeholder="打回理由 — FR 会根据这个反馈重新实现..."></textarea>
         <button class="btn btn-reject" style="margin-top:6px" onclick="reviewTask('${task.id}', 'reject')">Confirm Reject</button>
       </div>
     </div>`;
@@ -821,6 +836,39 @@ function requestResplit(proposalId) {
 
 function showReject(taskId) {
   document.getElementById(`reject-form-${taskId}`).style.display = 'block';
+}
+
+async function reviewTaskAccept(taskId) {
+  const push = document.getElementById(`accept-push-${taskId}`).checked;
+  const createPr = document.getElementById(`accept-pr-${taskId}`).checked;
+  await fetch(`/api/tasks/${taskId}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'accept', push, create_pr: createPr }),
+  });
+  addLogEntry('task_accepted', `${taskId} accepted (push=${push}, pr=${createPr && push})`);
+  await fetchGraph();
+  const node = graphData.nodes.find(n => n.id === taskId);
+  if (node) onNodeClick(node);
+}
+
+async function promptRenameBranch(taskId, currentName) {
+  const newName = prompt('New branch name:', currentName);
+  if (!newName || newName === currentName) return;
+  const res = await fetch(`/api/tasks/${taskId}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'rename_branch', new_branch: newName }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    alert('Rename failed: ' + (data.detail || 'unknown'));
+    return;
+  }
+  addLogEntry('branch_renamed', data.message);
+  await fetchGraph();
+  const node = graphData.nodes.find(n => n.id === taskId);
+  if (node) onNodeClick(node);
 }
 
 async function reviewTask(taskId, action) {

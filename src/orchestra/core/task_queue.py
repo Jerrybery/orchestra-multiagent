@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     worktree_path TEXT,
     spec_path TEXT,
     reject_reason TEXT,
+    source_issue INTEGER,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     FOREIGN KEY (requirement_id) REFERENCES requirements(id)
@@ -208,6 +209,7 @@ class Task:
     worktree_path: Optional[str] = None
     spec_path: Optional[str] = None
     reject_reason: Optional[str] = None
+    source_issue: Optional[int] = None  # GitHub issue that originated this work
     created_at: float = 0.0
     updated_at: float = 0.0
 
@@ -231,7 +233,15 @@ class TaskQueue:
         self._db = await aiosqlite.connect(str(self.db_path))
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)
+        await self._migrate()
         await self._db.commit()
+
+    async def _migrate(self) -> None:
+        """Apply column additions for existing DBs."""
+        async with self._db.execute("PRAGMA table_info(tasks)") as cur:
+            cols = {row["name"] async for row in cur}
+        if "source_issue" not in cols:
+            await self._db.execute("ALTER TABLE tasks ADD COLUMN source_issue INTEGER")
 
     async def close(self) -> None:
         if self._db:
@@ -320,21 +330,23 @@ class TaskQueue:
     async def add_task(self, task_id: str, title: str, priority: int = 0,
                        depends_on: list[str] | None = None,
                        spec_path: str | None = None,
-                       requirement_id: str | None = None) -> Task:
+                       requirement_id: str | None = None,
+                       source_issue: int | None = None) -> Task:
         now = time.time()
         deps = depends_on or []
         await self._db.execute(
             """INSERT INTO tasks (id, title, status, priority, depends_on,
-               requirement_id, spec_path, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               requirement_id, spec_path, source_issue, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (task_id, title, TaskStatus.IDEA.value, priority,
-             json.dumps(deps), requirement_id, spec_path, now, now),
+             json.dumps(deps), requirement_id, spec_path, source_issue, now, now),
         )
         await self._db.commit()
         return Task(
             id=task_id, title=title, status=TaskStatus.IDEA,
             priority=priority, depends_on=deps,
             requirement_id=requirement_id, spec_path=spec_path,
+            source_issue=source_issue,
             created_at=now, updated_at=now,
         )
 
@@ -352,6 +364,24 @@ class TaskQueue:
             params = ()
         async with self._db.execute(sql, params) as cur:
             return [Task.from_row(row) async for row in cur]
+
+    async def update_task_fields(self, task_id: str, **kwargs) -> Optional[Task]:
+        """Update task fields without changing status. Allowed: branch, assigned_to,
+        worktree_path, reject_reason."""
+        sets: list[str] = ["updated_at = ?"]
+        params: list = [time.time()]
+        for col in ("branch", "assigned_to", "worktree_path", "reject_reason"):
+            if col in kwargs:
+                sets.append(f"{col} = ?")
+                params.append(kwargs[col])
+        if len(sets) == 1:
+            return await self.get_task(task_id)
+        params.append(task_id)
+        await self._db.execute(
+            f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", params
+        )
+        await self._db.commit()
+        return await self.get_task(task_id)
 
     async def transition(self, task_id: str, new_status: TaskStatus, **kwargs) -> Task:
         """Atomically transition a task to a new status.

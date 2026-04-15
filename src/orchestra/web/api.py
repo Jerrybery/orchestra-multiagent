@@ -63,8 +63,11 @@ class SubmitRequest(BaseModel):
 
 
 class ReviewAction(BaseModel):
-    action: str  # "accept" or "reject"
+    action: str  # "accept" | "reject" | "rename_branch"
     reason: str = ""
+    push: bool = True        # for accept: push branch to remote
+    create_pr: bool = True   # for accept: create GitHub PR
+    new_branch: str = ""     # for rename_branch
 
 
 class ProposalAction(BaseModel):
@@ -483,6 +486,7 @@ async def get_task(task_id: str):
         "requirement": req,
         "assigned_to": t.assigned_to, "branch": t.branch,
         "reject_reason": t.reject_reason,
+        "source_issue": t.source_issue,
         "spec": spec,
         "report": report,
         "created_at": t.created_at, "updated_at": t.updated_at,
@@ -545,17 +549,41 @@ async def review_task(task_id: str, action: ReviewAction):
     t = await orch.task_queue.get_task(task_id)
     if not t:
         raise HTTPException(404, f"Task {task_id} not found")
+
+    if action.action == "rename_branch":
+        if not action.new_branch.strip():
+            raise HTTPException(400, "new_branch required")
+        ok, msg = await orch.rename_branch(task_id, action.new_branch.strip())
+        if not ok:
+            raise HTTPException(400, msg)
+        return {"status": "renamed", "message": msg}
+
     if t.status != TaskStatus.REVIEW:
         raise HTTPException(400, f"Task {task_id} is not in REVIEW status")
 
     if action.action == "accept":
-        await orch.accept_task(task_id)
-        return {"status": "accepted"}
+        await orch.accept_task(task_id, push=action.push, create_pr=action.create_pr)
+        return {
+            "status": "accepted",
+            "pushed": action.push,
+            "pr_created": action.push and action.create_pr,
+        }
     elif action.action == "reject":
         await orch.reject_task(task_id, action.reason)
         return {"status": "rejected"}
     else:
         raise HTTPException(400, f"Unknown action: {action.action}")
+
+
+@app.post("/api/tasks/{task_id}/push")
+async def push_task_branch(task_id: str):
+    """Push a task's branch to remote, independent of accept flow."""
+    orch = _orch()
+    t = await orch.task_queue.get_task(task_id)
+    if not t:
+        raise HTTPException(404, f"Task {task_id} not found")
+    ok = await orch.worktree.push_branch(task_id)
+    return {"pushed": ok}
 
 
 # ── Discussion Tracking ─────────────────────────────────────

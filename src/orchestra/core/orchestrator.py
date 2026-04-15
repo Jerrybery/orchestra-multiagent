@@ -356,6 +356,32 @@ class Orchestrator:
 
     # ── Head Leader ─────────────────────────────────────────────────
 
+    @staticmethod
+    def _extract_title(requirement: str) -> str:
+        """Extract a clean human-readable title from a requirement string."""
+        import re as _re
+        # If requirement starts with [From Discussion Tree #N: TITLE], use TITLE
+        m = _re.match(r'\[From Discussion Tree #\d+:\s*(.+?)\]', requirement)
+        if m:
+            return m.group(1).strip()[:80]
+        # If starts with markdown heading, use that
+        m = _re.match(r'^\s*#+\s*(.+)$', requirement.splitlines()[0] if requirement else "")
+        if m:
+            return m.group(1).strip()[:80]
+        # Otherwise first non-empty line, truncated
+        for line in requirement.splitlines():
+            line = line.strip()
+            if line and not line.startswith('['):
+                return line[:80]
+        return requirement[:80]
+
+    @staticmethod
+    def _extract_source_issue(requirement: str) -> Optional[int]:
+        """Extract source issue number from '[From Discussion Tree #N: ...]' tag."""
+        import re as _re
+        m = _re.match(r'\[From Discussion Tree #(\d+):', requirement)
+        return int(m.group(1)) if m else None
+
     async def submit_requirement(self, requirement: str) -> str:
         """Send a requirement to a Head Leader. Returns proposal_id for human review."""
         import hashlib
@@ -364,12 +390,21 @@ class Orchestrator:
         req_id = "req-" + hashlib.sha256(unique.encode()).hexdigest()[:8]
         await self.task_queue.add_requirement(req_id, requirement)
 
-        # Create GitHub idea issue
-        idea_issue = await self.github.create_idea_issue(
-            title=requirement[:80],
-            body=f"## Idea\n\n{requirement}\n\n---\n*Created by Orchestra*",
-        )
-        idea_issue_num = idea_issue["number"] if idea_issue else 0
+        # Use source issue if present, otherwise create a new idea issue
+        source_issue = self._extract_source_issue(requirement)
+        title = self._extract_title(requirement)
+
+        idea_issue_num = 0
+        if source_issue:
+            # Requirement came from an existing issue — link to it, don't create a new one
+            idea_issue_num = source_issue
+            log.info("Requirement linked to existing issue #%d", source_issue)
+        else:
+            idea_issue = await self.github.create_idea_issue(
+                title=title,
+                body=f"## Idea\n\n{requirement}\n\n---\n*Created by Orchestra*",
+            )
+            idea_issue_num = idea_issue["number"] if idea_issue else 0
         await self._emit("hl_start", {
             "requirement_id": req_id,
             "requirement": requirement[:200],
@@ -458,6 +493,7 @@ class Orchestrator:
                 depends_on=feat.get("depends_on", []),
                 requirement_id=proposal.requirement_id,
                 spec_path=str(spec_path),
+                source_issue=feat_issue_num or idea_issue_num or None,
             )
             tasks.append(task)
 
@@ -483,7 +519,9 @@ class Orchestrator:
     async def _run_fr(self, task: Task) -> None:
         """Run a Feature Realizer for a single task."""
         # Create worktree
-        wt_path = await self.worktree.create_worktree(task.id, title=task.title)
+        wt_path = await self.worktree.create_worktree(
+            task.id, title=task.title, source_issue=task.source_issue,
+        )
         branch = self.worktree.get_branch_name(task.id)
 
         # Transition to IN_PROGRESS
@@ -526,10 +564,10 @@ class Orchestrator:
             await self.task_queue.transition(task.id, TaskStatus.IMPLEMENTED)
             notes = parsed.get("notes", "") if parsed else "no structured output"
 
-            # Push feature branch to remote for visibility / PR
-            pushed = await self.worktree.push_branch(task.id)
-            await self._emit("fr_done", {"task_id": task.id, "notes": notes, "pushed": pushed})
-            log.info("FR completed %s (structured=%s, pushed=%s)", task.id, parsed is not None, pushed)
+            # Do NOT auto-push. User decides at review time whether to push
+            # and whether to create a PR.
+            await self._emit("fr_done", {"task_id": task.id, "notes": notes})
+            log.info("FR completed %s (structured=%s)", task.id, parsed is not None)
         else:
             reason = f"Exit code {result.exit_code}"
             if parsed:
@@ -581,54 +619,92 @@ class Orchestrator:
 
     # ── Human Review Actions ────────────────────────────────────────
 
-    async def accept_task(self, task_id: str) -> None:
-        """Human accepts a task: push branch, create PR, mark DONE."""
+    async def accept_task(self, task_id: str, push: bool = True,
+                          create_pr: bool = True) -> None:
+        """Human accepts a task. Options control push and PR creation.
+
+        push=False → keep branch local only
+        create_pr=False → push only, no PR
+        """
         await self.task_queue.transition(task_id, TaskStatus.ACCEPTED)
 
         task = await self.task_queue.get_task(task_id)
         branch = self.worktree.get_branch_name(task_id)
 
-        # Push branch to remote
-        await self.worktree.push_branch(task_id)
+        pushed = False
+        if push:
+            pushed = await self.worktree.push_branch(task_id)
 
-        # Build PR body from spec + FI report
-        spec = self.context.read_spec(task_id) or ""
-        report = self.context.read_report(task_id) or ""
-        pr_body = f"## Feature: {task.title}\n\n"
-        if spec:
-            pr_body += f"### Spec\n{spec}\n\n"
-        if report:
-            pr_body += f"### Verification Report\n{report}\n\n"
-        pr_body += "---\n*Generated by [Orchestra](https://github.com/Jerrybery/orchestra-multiagent)*"
+        pr_ok = False
+        pr_url = ""
+        if push and create_pr:
+            spec = self.context.read_spec(task_id) or ""
+            report = self.context.read_report(task_id) or ""
+            pr_body = f"## Feature: {task.title}\n\n"
+            if task.source_issue:
+                pr_body += f"Implements #{task.source_issue}\n\n"
+            if spec:
+                pr_body += f"### Spec\n{spec}\n\n"
+            if report:
+                pr_body += f"### Verification Report\n{report}\n\n"
+            pr_body += "---\n*Generated by [Orchestra](https://github.com/Jerrybery/orchestra-multiagent)*"
 
-        # Get the target base branch
-        base = await self.github.get_main_branch()
-
-        # Create PR via GitHub
-        pr_ok, pr_url = await self.github.create_pr(
-            branch=branch,
-            base=base,
-            title=f"{task_id}: {task.title}",
-            body=pr_body,
-        )
+            base = await self.github.get_main_branch()
+            pr_ok, pr_url = await self.github.create_pr(
+                branch=branch, base=base,
+                title=f"{task_id}: {task.title}",
+                body=pr_body,
+            )
 
         await self.task_queue.transition(task_id, TaskStatus.DONE)
 
-        if pr_ok:
-            await self._emit("task_done", {"task_id": task_id, "pr_url": pr_url})
-            log.info("PR created for %s: %s", task_id, pr_url)
-        else:
-            await self._emit("task_done", {"task_id": task_id, "pr_failed": pr_url})
-            log.warning("PR creation failed for %s: %s", task_id, pr_url)
+        event_data = {
+            "task_id": task_id,
+            "pushed": pushed,
+            "pr_created": pr_ok,
+            "pr_url": pr_url if pr_ok else None,
+        }
+        await self._emit("task_done", event_data)
+        log.info("Task %s done (pushed=%s, pr=%s)", task_id, pushed, pr_ok)
 
         # Promote downstream tasks
         promoted = await self.task_queue.promote_ready_tasks()
         if promoted:
             await self._emit("tasks_promoted", {"task_ids": [t.id for t in promoted]})
 
-        # Check if all tasks for this requirement are DONE → create idea merge branch
         if task.requirement_id:
             await self._maybe_create_idea_branch(task.requirement_id)
+
+    async def rename_branch(self, task_id: str, new_name: str) -> tuple[bool, str]:
+        """Rename a task's branch. Returns (success, message)."""
+        task = await self.task_queue.get_task(task_id)
+        if not task:
+            return False, f"Task {task_id} not found"
+
+        old_name = self.worktree.get_branch_name(task_id)
+        if old_name == new_name:
+            return True, "unchanged"
+
+        wt_path = self.worktree.worktrees_dir / task_id
+
+        # Rename the branch. If worktree exists, rename within it.
+        if wt_path.exists():
+            rc, _, err = await self.worktree._run(
+                "git", "branch", "-m", old_name, new_name, cwd=wt_path,
+            )
+        else:
+            rc, _, err = await self.worktree._run(
+                "git", "branch", "-m", old_name, new_name,
+            )
+        if rc != 0:
+            return False, f"rename failed: {err[:200]}"
+
+        self.worktree._branch_cache[task_id] = new_name
+        await self.task_queue.update_task_fields(task_id, branch=new_name)
+        await self._emit("branch_renamed", {
+            "task_id": task_id, "old": old_name, "new": new_name,
+        })
+        return True, f"{old_name} → {new_name}"
 
     async def _maybe_create_idea_branch(self, requirement_id: str) -> None:
         """If all tasks for a requirement are DONE, create a combined idea branch."""
