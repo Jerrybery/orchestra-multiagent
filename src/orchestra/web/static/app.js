@@ -1470,10 +1470,50 @@ function renderIssuesList(issues) {
           ${labels ? '<span class="issue-labels">' + labels + '</span>' : ''}
         </div>
       </div>
-      <span class="issue-comments">${comments > 0 ? comments + ' comment' + (comments > 1 ? 's' : '') : ''}</span>
+      <div class="issue-actions">
+        <span class="issue-comments">${comments > 0 ? comments + ' 💬' : ''}</span>
+        <button class="btn btn-compact issue-make-idea"
+                data-issue="${issue.number}">
+          + Idea
+        </button>
+      </div>
     </div>`;
   }
   list.innerHTML = html;
+
+  list.querySelectorAll('.issue-make-idea').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      makeIdeaFromIssue(parseInt(btn.dataset.issue, 10));
+    });
+  });
+}
+
+async function makeIdeaFromIssue(issueNumber) {
+  const instruction = prompt(
+    `从 issue #${issueNumber} 创建 Idea，可以附加说明（可选）：`,
+    ''
+  );
+  if (instruction === null) return;  // cancelled
+
+  addLogEntry('issue_to_idea', `Submitting #${issueNumber} to Head Leader…`);
+
+  try {
+    const res = await fetch(`/api/issues/${issueNumber}/idea`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instruction: instruction.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert('Failed: ' + (data.detail || 'unknown'));
+      return;
+    }
+    addLogEntry('issue_to_idea', `#${issueNumber} → proposal ${data.proposal_id}`);
+    await fetchGraph();
+  } catch (e) {
+    alert('Failed: ' + e.message);
+  }
 }
 
 // ── PRs tab ──────────────────────────────────────────────────

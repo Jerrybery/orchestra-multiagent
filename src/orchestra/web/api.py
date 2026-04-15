@@ -355,6 +355,23 @@ async def get_graph():
             ]}
 
 
+class IssueIdeaRequest(BaseModel):
+    instruction: str = ""
+
+
+@app.post("/api/issues/{issue_number}/idea")
+async def submit_issue_idea(issue_number: int, req: IssueIdeaRequest):
+    """Submit any GitHub issue as an idea to Head Leader."""
+    orch = _orch()
+    try:
+        proposal_id = await orch.submit_issue_as_idea(
+            issue_number, extra_instruction=req.instruction,
+        )
+        return {"status": "submitted", "proposal_id": proposal_id}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 @app.get("/api/issues")
 async def get_issues(state: str = "open", label: Optional[str] = None):
     """Fetch GitHub issues for the connected project."""
