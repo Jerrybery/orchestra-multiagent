@@ -38,6 +38,36 @@ class WorktreeManager:
             return False
         return True
 
+    async def ensure_orchestra_gitignored(self) -> bool:
+        """Make sure .orchestra is in .gitignore so it survives branch switches."""
+        gitignore = self.repo_dir / ".gitignore"
+        entry = ".orchestra/"
+
+        existing = ""
+        if gitignore.exists():
+            try:
+                existing = gitignore.read_text()
+            except OSError:
+                existing = ""
+
+        # Check if already covered (allow variations like .orchestra, .orchestra/, /.orchestra)
+        for line in existing.splitlines():
+            stripped = line.strip().rstrip('/').lstrip('/')
+            if stripped == ".orchestra":
+                return False  # already present
+
+        new_content = existing
+        if new_content and not new_content.endswith("\n"):
+            new_content += "\n"
+        new_content += f"\n# Orchestra multi-agent workspace\n{entry}\n"
+        try:
+            gitignore.write_text(new_content)
+            log.info("Added .orchestra/ to .gitignore in %s", self.repo_dir)
+            return True
+        except OSError as e:
+            log.warning("Failed to update .gitignore: %s", e)
+            return False
+
     async def checkout_branch_latest(self, branch: str) -> tuple[bool, str]:
         """Checkout a branch and fast-forward to the remote latest.
 
