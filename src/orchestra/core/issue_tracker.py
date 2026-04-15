@@ -339,30 +339,40 @@ class IssueTracker:
 
     # ── Phase 3: Incremental comment fetching ──────────────
 
+    @staticmethod
+    def _is_bot_comment(comment: dict) -> bool:
+        """Detect Orchestra's own posted comments to avoid self-triggered analysis."""
+        body = comment.get("body", "") or ""
+        return "Orchestra Discussion Analyst" in body
+
     async def _fetch_new_comments(self, tree: DiscussionTree) -> bool:
-        """Fetch new comments for all issues/PRs in tree. Returns True if any new."""
+        """Fetch new comments for all issues/PRs. Ignores bot's own comments
+        so Orchestra doesn't re-trigger analysis on replies it just posted."""
         has_new = False
 
         for num, node in tree.nodes.items():
             if node.is_pr:
-                comments = await self.github.get_pr_comments(num)
+                all_comments = await self.github.get_pr_comments(num)
             else:
-                comments = await self.github.get_issue_comments(num)
-            if not comments:
+                all_comments = await self.github.get_issue_comments(num)
+            if not all_comments:
                 continue
 
-            # Use count-based tracking — last_comment_id stores the count we last saw
-            old_count = node.last_comment_id  # repurposed as last seen count
-            if len(comments) > old_count:
-                new_comments = comments[old_count:]
+            # Filter out our own bot comments — they don't count as "new activity"
+            human_comments = [c for c in all_comments if not self._is_bot_comment(c)]
+
+            # Count-based tracking on human-authored comments only
+            old_count = node.last_comment_id
+            if len(human_comments) > old_count:
+                new_comments = human_comments[old_count:]
                 node.comments.extend(new_comments)
-                node.last_comment_id = len(comments)
+                node.last_comment_id = len(human_comments)
                 has_new = True
 
                 await self.task_queue.update_discussion_issue(
                     num, last_comment_id=node.last_comment_id,
                 )
-                log.info("Fetched %d new comments on #%d", len(new_comments), num)
+                log.info("Fetched %d new human comments on #%d", len(new_comments), num)
 
         return has_new
 
