@@ -648,6 +648,7 @@ function esc(s) {
 async function onNodeClick(node) {
   selectedNodeId = node.id;
   renderGraph();
+  activateSideTab('details');
 
   const titleEl = document.getElementById('detail-title');
   const contentEl = document.getElementById('detail-content');
@@ -857,9 +858,10 @@ function renderAgents(agents) {
 
 // ── Agent detail panel (right panel) ────────────────────────────
 
-document.getElementById('btn-show-agents').addEventListener('click', showAgentsPanel);
+{ const _btn = document.getElementById('btn-show-agents'); if (_btn) _btn.addEventListener('click', showAgentsPanel); }
 
 async function showAgentsPanel() {
+  activateSideTab('details');
   const titleEl = document.getElementById('detail-title');
   const contentEl = document.getElementById('detail-content');
   titleEl.textContent = 'Agents';
@@ -922,30 +924,31 @@ async function showAgentDetail(agentId) {
   if (viewer) viewer.scrollTop = viewer.scrollHeight;
 }
 
-// ── Auto-accept toggle ──────────────────────────────────────────
+// ── Auto-accept toggle (status pill) ──────────────────────────
 
-document.getElementById('btn-auto-accept').addEventListener('click', async () => {
+document.getElementById('pill-auto-accept').addEventListener('click', async () => {
   const res = await fetch('/api/auto-accept', { method: 'POST' });
   const data = await res.json();
   updateAutoAcceptBtn(data.auto_accept);
 });
 
 function updateAutoAcceptBtn(enabled) {
-  const btn = document.getElementById('btn-auto-accept');
-  btn.textContent = `Auto-Accept: ${enabled ? 'ON' : 'OFF'}`;
-  btn.style.borderColor = enabled ? '#238636' : '';
-  btn.style.color = enabled ? '#3fb950' : '';
+  const pill = document.getElementById('pill-auto-accept');
+  const value = document.getElementById('pill-auto-accept-value');
+  if (!pill || !value) return;
+  pill.classList.toggle('active', !!enabled);
+  value.textContent = enabled ? 'on' : 'off';
 }
 
 // ── Switch project ──────────────────────────────────────────────
 
-document.getElementById('btn-switch').addEventListener('click', async () => {
+async function doSwitchProject() {
   if (!confirm('Disconnect from current project and switch?')) return;
   await fetch('/api/disconnect', { method: 'POST' });
   document.getElementById('dashboard').classList.add('hidden');
   document.getElementById('setup-screen').classList.remove('hidden');
   setupBrowse('~');
-});
+}
 
 // ── Submit modal ────────────────────────────────────────────────
 
@@ -982,8 +985,6 @@ document.querySelectorAll('.log-tab').forEach(tab => {
 function switchTab(tabName) {
   document.querySelectorAll('.log-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
   document.querySelectorAll('.log-tab-content').forEach(c => c.classList.toggle('active', c.id === `tab-${tabName}`));
-  if (tabName === 'issues' && !issuesCache.length) fetchIssues();
-  if (tabName === 'drafts') fetchDrafts();
 }
 
 // ── SSE Event stream ────────────────────────────────────────────
@@ -1166,13 +1167,17 @@ function startDashboard() {
   fetchGraph();
   fetchAgents();
   fetchTrackingStatus();
-  fetchIssues();
   fetchDrafts();
   fetchTrackedBranch();
   setInterval(fetchAgents, 5000);
   setInterval(fetchGraph, 10000);
   setInterval(fetchDrafts, 10000);
-  setInterval(() => { if (document.querySelector('.log-tab[data-tab="issues"].active')) fetchIssues(); }, 30000);
+  setInterval(() => {
+    const active = document.querySelector('.side-tab.active[data-side-tab]');
+    if (!active) return;
+    if (active.dataset.sideTab === 'issues') fetchIssues();
+    else if (active.dataset.sideTab === 'prs') fetchPRs();
+  }, 30000);
   connectSSE();
 }
 
@@ -1191,11 +1196,11 @@ async function fetchTrackedBranch() {
 }
 
 function updateTrackedBranchBtn() {
-  const btn = document.getElementById('btn-tracked-branch');
-  if (!btn) return;
-  btn.textContent = `分支: ${currentTrackedBranch || '—'}`;
-  btn.style.borderColor = currentTrackedBranch ? 'var(--c-implemented)' : '';
-  btn.style.color = currentTrackedBranch ? 'var(--c-implemented)' : '';
+  const pill = document.getElementById('pill-branch');
+  const value = document.getElementById('pill-branch-value');
+  if (!pill || !value) return;
+  value.textContent = currentTrackedBranch || '—';
+  pill.classList.toggle('active', !!currentTrackedBranch);
 }
 
 async function promptTrackedBranch() {
@@ -1221,14 +1226,12 @@ async function promptTrackedBranch() {
 }
 
 async function gitFetch() {
-  const btn = document.getElementById('btn-git-fetch');
-  if (btn) { btn.textContent = '↻ Fetching...'; btn.disabled = true; }
+  addLogEntry('git_fetch', 'Fetching from origin…');
   try {
     await fetch('/api/git/fetch', { method: 'POST' });
-    addLogEntry('git_fetch', '已从 origin 拉取最新提交');
+    addLogEntry('git_fetch', 'Fetched latest from origin');
     await fetchGraph();
   } catch (e) {}
-  if (btn) { btn.textContent = '↻ Fetch'; btn.disabled = false; }
 }
 
 async function checkoutCommit(ref) {
@@ -1285,8 +1288,7 @@ async function checkoutCommit(ref) {
 }
 
 // Wire up buttons
-document.getElementById('btn-tracked-branch').addEventListener('click', promptTrackedBranch);
-document.getElementById('btn-git-fetch').addEventListener('click', gitFetch);
+// (Legacy buttons removed — see new menu wiring at bottom of file)
 
 // ── Panel Resizers ─────────────────────────────────────────────
 
@@ -1426,6 +1428,72 @@ function renderIssuesList(issues) {
   list.innerHTML = html;
 }
 
+// ── PRs tab ──────────────────────────────────────────────────
+
+let prsState = 'open';
+let prsCache = [];
+
+async function fetchPRs(state) {
+  if (state) prsState = state;
+  const list = document.getElementById('prs-list');
+  if (!list) return;
+
+  if (!prsCache.length) {
+    list.innerHTML = '<div class="issues-loading">Loading PRs...</div>';
+  }
+  try {
+    const res = await fetch(`/api/prs?state=${prsState}`);
+    if (!res.ok) throw new Error('Failed to fetch');
+    const fresh = await res.json();
+    if (JSON.stringify(fresh) !== JSON.stringify(prsCache)) {
+      prsCache = fresh;
+      renderPRsList(prsCache);
+    }
+  } catch (e) {
+    if (!prsCache.length) {
+      list.innerHTML = `<div class="issues-empty">Could not load PRs: ${esc(e.message)}</div>`;
+    }
+  }
+}
+
+function renderPRsList(prs) {
+  const list = document.getElementById('prs-list');
+  if (!list) return;
+  if (!prs.length) {
+    list.innerHTML = '<div class="issues-empty">No PRs found</div>';
+    return;
+  }
+
+  let html = '';
+  for (const pr of prs) {
+    const labels = (pr.labels || []).map(l => {
+      const cls = ['discuss','idea','feat','bug','rfc','orchestra-ready'].includes(l) ? ` l-${l}` : '';
+      return `<span class="issue-label${cls}">${esc(l)}</span>`;
+    }).join('');
+    const timeAgo = formatTimeAgo(pr.updated_at || pr.created_at);
+    const comments = pr.comment_count || 0;
+    const url = pr.url || '#';
+    const state = (pr.state || 'open').toLowerCase();
+    const stateClass = state === 'merged' ? 'merged' : state === 'closed' ? 'closed' : 'open';
+
+    html += `<div class="issue-row">
+      <span class="issue-number">#${pr.number}</span>
+      <div class="issue-main">
+        <div class="issue-title">
+          <span class="issue-state-pill ${stateClass}">${state}</span>
+          <a href="${esc(url)}" target="_blank" rel="noopener">${esc(pr.title)}</a>
+        </div>
+        <div class="issue-meta">
+          @${esc(pr.author)} · ${timeAgo} · <span style="color:var(--text-dim)">${esc(pr.head || '')} → ${esc(pr.base || '')}</span>
+          ${labels ? '<span class="issue-labels">' + labels + '</span>' : ''}
+        </div>
+      </div>
+      <span class="issue-comments">${comments > 0 ? comments + ' comment' + (comments > 1 ? 's' : '') : ''}</span>
+    </div>`;
+  }
+  list.innerHTML = html;
+}
+
 function formatTimeAgo(dateStr) {
   if (!dateStr) return '';
   try {
@@ -1444,11 +1512,13 @@ function formatTimeAgo(dateStr) {
 }
 
 // Issues filter buttons
-document.querySelectorAll('.issues-filter').forEach(btn => {
+document.querySelectorAll('.filter[data-target]').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.issues-filter').forEach(b => b.classList.remove('active'));
+    const target = btn.dataset.target;
+    document.querySelectorAll(`.filter[data-target="${target}"]`).forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    fetchIssues(btn.dataset.state);
+    if (target === 'issues') fetchIssues(btn.dataset.state);
+    else if (target === 'prs') fetchPRs(btn.dataset.state);
   });
 });
 
@@ -1804,8 +1874,12 @@ async function toggleWatch() {
 }
 
 function updateWatchBtn() {
-  const btn = document.getElementById('btn-watch');
-  btn.textContent = `Watch: ${watchActive ? 'ON' : 'OFF'}`;
+  const pill = document.getElementById('pill-watch');
+  const value = document.getElementById('pill-watch-value');
+  if (!pill || !value) return;
+  pill.classList.toggle('active', watchActive);
+  value.textContent = watchActive ? 'on' : 'off';
+  return;
   btn.style.borderColor = watchActive ? '#238636' : '';
   btn.style.color = watchActive ? '#3fb950' : '';
 }
@@ -1959,21 +2033,27 @@ document.getElementById('focus-input').addEventListener('keydown', (e) => {
 
 function toggleTagEditor() {
   tagEditorOpen = !tagEditorOpen;
-  document.getElementById('tag-editor').classList.toggle('hidden', !tagEditorOpen);
+  const popover = document.getElementById('watch-editor');
+  if (popover) popover.classList.toggle('hidden', !tagEditorOpen);
+}
+
+function closeTagEditor() {
+  tagEditorOpen = false;
+  const popover = document.getElementById('watch-editor');
+  if (popover) popover.classList.add('hidden');
 }
 
 // Close tag editor on outside click
 document.addEventListener('click', (e) => {
-  if (tagEditorOpen && !e.target.closest('.watch-group')) {
-    tagEditorOpen = false;
-    document.getElementById('tag-editor').classList.add('hidden');
+  if (tagEditorOpen &&
+      !e.target.closest('#watch-editor') &&
+      !e.target.closest('#menu-watch-labels') &&
+      !e.target.closest('#pill-watch')) {
+    closeTagEditor();
   }
 });
 
-document.getElementById('btn-watch-tags').addEventListener('click', (e) => {
-  e.stopPropagation();
-  toggleTagEditor();
-});
+// (btn-watch-tags removed — watch editor opens from overflow menu now)
 
 // Enter key in tag input
 document.getElementById('tag-input').addEventListener('keydown', (e) => {
@@ -1981,10 +2061,9 @@ document.getElementById('tag-input').addEventListener('keydown', (e) => {
 });
 
 async function fetchDiscussions() {
-  const titleEl = document.getElementById('detail-title');
-  const contentEl = document.getElementById('detail-content');
-  titleEl.textContent = 'Discussions';
+  const listEl = document.getElementById('discussions-list');
   discussionsPanelOpen = true;
+  if (!listEl) return;
 
   try {
     const res = await fetch('/api/discussions');
@@ -1992,7 +2071,7 @@ async function fetchDiscussions() {
     const discussions = await res.json();
     renderDiscussions(discussions);
   } catch (e) {
-    contentEl.innerHTML = `<div class="disc-empty">
+    listEl.innerHTML = `<div class="disc-empty">
       <p><b>Could not load discussions</b></p>
       <p>${esc(e.message)}</p>
     </div>`;
@@ -2003,6 +2082,7 @@ async function fetchDiscussionDetail(rootIssue) {
   const titleEl = document.getElementById('detail-title');
   const contentEl = document.getElementById('detail-content');
   titleEl.textContent = `Discussion #${rootIssue}`;
+  activateSideTab('details');
 
   try {
     const res = await fetch(`/api/discussions/${encodeURIComponent(rootIssue)}`);
@@ -2055,7 +2135,8 @@ async function submitDiscussionAsIdea(rootIssue) {
 }
 
 function renderDiscussions(discussions) {
-  const contentEl = document.getElementById('detail-content');
+  const contentEl = document.getElementById('discussions-list');
+  if (!contentEl) return;
 
   if (!discussions || !discussions.length) {
     contentEl.innerHTML = `<div class="disc-empty">
@@ -2248,11 +2329,86 @@ function renderIssueTree(issues, rootIssue) {
   return html || '<p style="color:var(--text-dim);font-size:12px">Empty tree</p>';
 }
 
-document.getElementById('btn-watch').addEventListener('click', toggleWatch);
-document.getElementById('btn-discussions').addEventListener('click', () => {
-  discussionsPanelOpen = true;
-  fetchDiscussions();
+// ═══════════════════════════════════════════════════════════
+// New UI wiring: side tabs, overflow menu, pills, list views
+// ═══════════════════════════════════════════════════════════
+
+// ── Side Tabs (right panel) ─────────────────────────────────
+const SIDE_TAB_HANDLERS = {
+  drafts: () => fetchDrafts(),
+  discussions: () => fetchDiscussions(),
+  issues: () => { if (!issuesCache.length) fetchIssues(); },
+  prs: () => { if (!prsCache.length) fetchPRs(); },
+};
+
+function activateSideTab(tabName) {
+  document.querySelectorAll('.side-tab[data-side-tab]').forEach(t => {
+    t.classList.toggle('active', t.dataset.sideTab === tabName);
+  });
+  document.querySelectorAll('.side-tab-pane').forEach(p => {
+    p.classList.toggle('active', p.dataset.pane === tabName);
+  });
+  const handler = SIDE_TAB_HANDLERS[tabName];
+  if (handler) handler();
+}
+
+document.querySelectorAll('.side-tab[data-side-tab]').forEach(tab => {
+  tab.addEventListener('click', () => activateSideTab(tab.dataset.sideTab));
 });
+
+// Global accessor: when something needs to switch user to a tab
+window.openSideTab = activateSideTab;
+
+// ── Status pill: Watch toggle on click ─────────────────────
+document.getElementById('pill-watch').addEventListener('click', toggleWatch);
+
+// ── Status pill: Branch (click opens prompt) ───────────────
+document.getElementById('pill-branch').addEventListener('click', promptTrackedBranch);
+
+// ── Overflow menu ──────────────────────────────────────────
+const menuBtn = document.getElementById('btn-menu');
+const overflowMenu = document.getElementById('overflow-menu');
+function toggleOverflowMenu(force) {
+  const isHidden = overflowMenu.classList.contains('hidden');
+  const show = force === true || (force === undefined && isHidden);
+  overflowMenu.classList.toggle('hidden', !show);
+}
+menuBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleOverflowMenu(); });
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#overflow-menu') && !e.target.closest('#btn-menu')) {
+    overflowMenu.classList.add('hidden');
+  }
+});
+
+// Menu items
+document.getElementById('menu-fetch').addEventListener('click', () => {
+  overflowMenu.classList.add('hidden');
+  gitFetch();
+});
+document.getElementById('menu-tracked-branch').addEventListener('click', () => {
+  overflowMenu.classList.add('hidden');
+  promptTrackedBranch();
+});
+document.getElementById('menu-watch-labels').addEventListener('click', (e) => {
+  overflowMenu.classList.add('hidden');
+  e.stopPropagation();
+  toggleTagEditor();
+});
+document.getElementById('menu-switch').addEventListener('click', () => {
+  overflowMenu.classList.add('hidden');
+  doSwitchProject();
+});
+
+// ── Close button (detail panel header) ──────────────────────
+{
+  const closeBtn = document.getElementById('btn-close-detail');
+  if (closeBtn) closeBtn.addEventListener('click', () => {
+    const content = document.getElementById('detail-content');
+    if (content) content.innerHTML = '<div class="empty-state"><div class="empty-glyph">◎</div><p>Click a node in the graph</p></div>';
+    document.getElementById('detail-title').textContent = 'Select a node';
+    activateSideTab('details');
+  });
+}
 
 // ── Startup: check if already initialized ───────────────────────
 
