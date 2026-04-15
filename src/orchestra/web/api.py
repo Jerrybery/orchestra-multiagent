@@ -203,7 +203,6 @@ async def checkout_ref(req: CheckoutRequest):
     ok, msg = await orch.worktree.checkout_ref(req.ref, force=req.force)
     if not ok:
         if msg.startswith("dirty|"):
-            # Return structured info so frontend can show details and ask user
             status = await orch.worktree.get_working_tree_status()
             return {
                 "status": "dirty",
@@ -212,15 +211,18 @@ async def checkout_ref(req: CheckoutRequest):
                 "ref": req.ref,
             }
         raise HTTPException(400, msg)
-    return {"status": "ok", "message": msg}
+    # Checkout may have clobbered .orchestra
+    recovered = await orch.recover_if_needed()
+    return {"status": "ok", "message": msg, "recovered": recovered}
 
 
 @app.post("/api/git/fetch")
 async def fetch_remote():
-    """Fetch remote refs and tags."""
+    """Fetch remote refs and tags, auto-recover orchestra state if clobbered."""
     orch = _orch()
     ok = await orch.worktree.fetch_remote()
-    return {"fetched": ok}
+    recovered = await orch.recover_if_needed()
+    return {"fetched": ok, "recovered": recovered}
 
 
 class TrackedBranchUpdate(BaseModel):

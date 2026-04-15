@@ -74,9 +74,9 @@ class Orchestrator:
         """Initialize all subsystems."""
         self.context.init()
         await self.worktree.ensure_repo()
+        await self.worktree.ensure_orchestra_gitignored()
         await self.task_queue.init()
 
-        # Auto-fetch and checkout tracked branch if configured
         if self.config.tracked_branch:
             log.info("Fetching remote and checking out tracked branch: %s",
                      self.config.tracked_branch)
@@ -86,8 +86,43 @@ class Orchestrator:
                     self.config.tracked_branch
                 )
                 log.info("Tracked branch checkout: %s (%s)", ok, msg)
+            # After checkout, .orchestra may have been removed — recover
+            await self.recover_if_needed()
 
         log.info("Orchestra initialized at %s", self.config.orchestra_dir)
+
+    async def recover_if_needed(self) -> bool:
+        """Check orchestra state after git operations. Re-init if .orchestra is gone.
+
+        Returns True if recovery was needed.
+        """
+        orchestra_dir = self.config.orchestra_dir
+        db_path = orchestra_dir / "tasks.db"
+
+        if orchestra_dir.exists() and db_path.exists():
+            # Verify DB is still valid
+            try:
+                await self.task_queue.all_tasks_summary()
+                return False
+            except Exception as e:
+                log.warning("DB unreadable after git op: %s — will reinit", e)
+
+        log.warning(".orchestra missing or DB invalid — re-initializing")
+
+        # Ensure gitignore first so the directory survives next switch
+        await self.worktree.ensure_orchestra_gitignored()
+
+        # Rebuild context dirs and DB (preserves prior data if still there)
+        self.context.init()
+        try:
+            await self.task_queue.close()
+        except Exception:
+            pass
+        await self.task_queue.init()
+        await self._emit("orchestra_recovered", {
+            "orchestra_dir": str(orchestra_dir),
+        })
+        return True
 
     async def close(self) -> None:
         await self.task_queue.close()
