@@ -1598,9 +1598,28 @@ body.resizing-v { cursor: row-resize; user-select: none; }
   color: var(--text-dim);
   font-size: 10.5px;
   font-family: var(--font-mono);
-  min-width: 54px;
+  min-width: 38px;
   text-align: right;
   padding-top: 2px;
+}
+.issue-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.issue-make-idea {
+  font-size: 10.5px !important;
+  padding: 3px 9px !important;
+  opacity: 0;
+  transition: opacity 0.12s;
+  background: rgba(111,207,122,0.1) !important;
+  border-color: rgba(111,207,122,0.35) !important;
+  color: var(--c-implemented) !important;
+}
+.issue-row:hover .issue-make-idea { opacity: 1; }
+.issue-make-idea:hover {
+  background: rgba(111,207,122,0.2) !important;
 }
 .issue-state-pill {
   display: inline-block;

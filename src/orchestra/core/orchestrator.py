@@ -237,6 +237,66 @@ class Orchestrator:
         await self.task_queue.update_discussion(root_issue, status="submitted")
         return proposal_id
 
+    async def submit_issue_as_idea(self, issue_number: int,
+                                    extra_instruction: str = "") -> str:
+        """Submit a specific GitHub issue as an idea to Head Leader.
+
+        Fetches the issue content + comments directly from GitHub (no tracker
+        required), builds a requirement, and links the task to the source issue.
+        """
+        issue = await self.github.get_issue(issue_number)
+        if not issue:
+            raise ValueError(f"Issue #{issue_number} not found")
+
+        title = issue.get("title", "")
+        body = issue.get("body", "") or ""
+        state = issue.get("state", "open")
+        comments = issue.get("comments", [])
+
+        parts = [
+            f"[From Discussion Tree #{issue_number}: {title}]",
+            "",
+            f"# {title}",
+            f"Source: GitHub issue #{issue_number} ({state})",
+            "",
+        ]
+
+        if body:
+            parts.append("## Description")
+            parts.append(body)
+            parts.append("")
+
+        human_comments = [
+            c for c in comments
+            if "Orchestra Discussion Analyst" not in c.get("body", "")
+        ]
+        if human_comments:
+            parts.append(f"## Discussion ({len(human_comments)} comments)")
+            for c in human_comments:
+                author = c.get("author", {}).get("login", "?")
+                ctext = c.get("body", "")[:1500]
+                parts.append(f"\n**@{author}:** {ctext}")
+
+        if extra_instruction:
+            parts.append(f"\n## Additional Instructions\n{extra_instruction}")
+
+        requirement = "\n".join(parts)
+
+        proposal_id = await self.submit_requirement(requirement)
+
+        await self.github.post_issue_comment(
+            issue_number,
+            f"This issue has been submitted as an idea for implementation.\n"
+            f"Proposal: `{proposal_id}`",
+        )
+
+        await self._emit("issue_submitted_as_idea", {
+            "issue_number": issue_number,
+            "proposal_id": proposal_id,
+        })
+
+        return proposal_id
+
     async def submit_discussion_as_idea(self, root_issue: int,
                                          extra_instruction: str = "") -> str:
         """Submit a discussion tree as an idea, regardless of maturity status.
