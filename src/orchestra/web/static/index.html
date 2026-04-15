@@ -3,20 +3,26 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Orchestra Dashboard</title>
+<title>Orchestra</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Instrument+Serif&family=Inter+Tight:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<link rel="stylesheet" href="/static/style.css?v=2">
+<link rel="stylesheet" href="/static/style.css?v=3">
 </head>
 <body>
 
-<!-- ── Setup Screen (shown when no project is connected) ── -->
+<!-- ── Setup Screen ───────────────────────────────────────── -->
 <div id="setup-screen" class="setup-screen hidden">
   <div class="setup-card">
-    <h1>Orchestra</h1>
-    <p class="setup-subtitle">Multi-Agent Coworking System</p>
+    <div class="setup-brand">
+      <span class="brand-glyph">◎</span>
+      <h1>Orchestra</h1>
+    </div>
+    <p class="setup-subtitle">A multi-agent coworking system for software teams</p>
 
     <div class="setup-section">
-      <label>Project Directory</label>
+      <label>Project directory</label>
       <div class="path-input-row">
         <input type="text" id="setup-path" placeholder="~/code/my-project" value="~">
         <button class="btn" onclick="setupBrowse(document.getElementById('setup-path').value)">Browse</button>
@@ -28,12 +34,12 @@
     <div id="setup-info" class="setup-info hidden"></div>
 
     <div class="setup-section">
-      <label>Tracked Branch (optional)</label>
+      <label>Tracked branch <span class="setup-muted">(optional)</span></label>
       <div class="path-input-row">
         <input type="text" id="setup-tracked-branch" placeholder="main" />
       </div>
-      <div style="font-size:11px;color:var(--text-dim);margin-top:4px">
-        每次启动时自动 fetch 并 checkout 到此分支的最新 commit
+      <div class="setup-hint">
+        Auto-fetches and checks out the latest on every start.
       </div>
     </div>
 
@@ -43,57 +49,113 @@
   </div>
 </div>
 
-<!-- ── Dashboard (shown when project is connected) ── -->
+<!-- ── Dashboard ───────────────────────────────────────────── -->
 <div id="dashboard" class="hidden">
 
 <header>
   <div class="header-left">
+    <span class="brand-glyph">◎</span>
     <h1>Orchestra</h1>
-    <span class="subtitle" id="project-label">Multi-Agent Coworking</span>
+    <span class="header-divider"></span>
+    <span class="project-label" id="project-label">—</span>
   </div>
-  <div class="header-right">
+
+  <div class="header-status">
     <div id="agent-status" class="agent-bar"></div>
-    <button id="btn-auto-accept" class="btn" title="Toggle auto-accept after FI">Auto-Accept: OFF</button>
-    <div class="watch-group">
-      <button id="btn-watch" class="btn" title="Toggle issue watching">Watch: OFF</button>
-      <button id="btn-watch-tags" class="btn-icon" title="Edit watch labels">&#9881;</button>
-      <div id="tag-editor" class="tag-editor hidden">
-        <div class="tag-editor-header">Watch Labels</div>
-        <div id="tag-pills" class="tag-pills"></div>
-        <div class="tag-input-row">
-          <input type="text" id="tag-input" placeholder="Add label..." />
-          <button class="btn" onclick="addWatchTag()">Add</button>
+  </div>
+
+  <div class="header-right">
+    <!-- Compact status pills -->
+    <div class="status-pills">
+      <button class="pill" id="pill-watch" title="Toggle issue watching">
+        <span class="pill-dot"></span>
+        <span class="pill-label">Watch</span>
+        <span class="pill-value" id="pill-watch-value">off</span>
+      </button>
+      <button class="pill" id="pill-branch" title="Set tracked branch">
+        <span class="pill-icon">⎇</span>
+        <span class="pill-value" id="pill-branch-value">—</span>
+      </button>
+      <button class="pill" id="pill-auto-accept" title="Toggle auto-accept after FI">
+        <span class="pill-icon">⚡</span>
+        <span class="pill-label">Auto</span>
+        <span class="pill-value" id="pill-auto-accept-value">off</span>
+      </button>
+    </div>
+
+    <button id="btn-submit" class="btn btn-primary">
+      <span class="btn-plus">+</span> Submit
+    </button>
+
+    <!-- Overflow menu -->
+    <div class="menu-group">
+      <button id="btn-menu" class="btn btn-icon-only" title="More">
+        <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="3" cy="7" r="1.4" fill="currentColor"/><circle cx="7" cy="7" r="1.4" fill="currentColor"/><circle cx="11" cy="7" r="1.4" fill="currentColor"/></svg>
+      </button>
+      <div id="overflow-menu" class="dropdown hidden">
+        <div class="dropdown-section">
+          <div class="dropdown-label">Git</div>
+          <button class="dropdown-item" id="menu-fetch">
+            <span class="dropdown-icon">↻</span>
+            <span>Fetch remote</span>
+          </button>
+          <button class="dropdown-item" id="menu-tracked-branch">
+            <span class="dropdown-icon">⎇</span>
+            <span>Set tracked branch…</span>
+          </button>
         </div>
-        <div class="tag-editor-divider"></div>
-        <div class="tag-editor-header">Focus Issues</div>
-        <div id="focus-pills" class="tag-pills"></div>
-        <div class="tag-input-row">
-          <input type="number" id="focus-input" placeholder="#123" min="1" />
-          <button class="btn" onclick="addFocusIssue()">Add</button>
+        <div class="dropdown-section">
+          <div class="dropdown-label">Watch</div>
+          <button class="dropdown-item" id="menu-watch-labels">
+            <span class="dropdown-icon">🏷</span>
+            <span>Labels & focus issues…</span>
+          </button>
+        </div>
+        <div class="dropdown-section">
+          <div class="dropdown-label">Project</div>
+          <button class="dropdown-item" id="menu-switch">
+            <span class="dropdown-icon">⇄</span>
+            <span>Switch project</span>
+          </button>
         </div>
       </div>
     </div>
-    <button id="btn-discussions" class="btn" title="View tracked discussions">Discussions</button>
-    <button id="btn-git-fetch" class="btn" title="Fetch remote">↻ Fetch</button>
-    <button id="btn-tracked-branch" class="btn" title="Set tracked branch">分支: —</button>
-    <button id="btn-switch" class="btn" title="Switch project">Switch Project</button>
-    <button id="btn-submit" class="btn btn-primary">+ Submit Requirement</button>
   </div>
 </header>
+
+<!-- Watch labels / Focus issues editor popover -->
+<div id="watch-editor" class="floating-popover hidden">
+  <div class="popover-arrow"></div>
+  <div class="popover-header">Watch Configuration</div>
+  <div class="popover-section">
+    <div class="popover-label">Labels</div>
+    <div id="tag-pills" class="tag-pills"></div>
+    <div class="tag-input-row">
+      <input type="text" id="tag-input" placeholder="Add label…" />
+      <button class="btn btn-compact" onclick="addWatchTag()">Add</button>
+    </div>
+  </div>
+  <div class="popover-section">
+    <div class="popover-label">Focus Issues</div>
+    <div id="focus-pills" class="tag-pills"></div>
+    <div class="tag-input-row">
+      <input type="number" id="focus-input" placeholder="#123" min="1" />
+      <button class="btn btn-compact" onclick="addFocusIssue()">Add</button>
+    </div>
+  </div>
+</div>
 
 <main>
   <section id="graph-panel" class="panel">
     <div class="panel-header">
-      <span>Feature Graph</span>
+      <span class="panel-title">Feature Graph</span>
       <div class="legend">
-        <span class="dot dot-proposal"></span>Proposed
-        <span class="dot dot-idea"></span>Idea
-        <span class="dot dot-assigned"></span>Assigned
-        <span class="dot dot-in_progress"></span>In Progress
-        <span class="dot dot-implemented"></span>Implemented
-        <span class="dot dot-testing"></span>Testing
-        <span class="dot dot-review"></span>Review
-        <span class="dot dot-done"></span>Done
+        <span class="dot dot-proposal"></span><span>Proposed</span>
+        <span class="dot dot-idea"></span><span>Idea</span>
+        <span class="dot dot-assigned"></span><span>Assigned</span>
+        <span class="dot dot-in_progress"></span><span>Progress</span>
+        <span class="dot dot-implemented"></span><span>Done</span>
+        <span class="dot dot-review"></span><span>Review</span>
       </div>
     </div>
     <div id="graph-container">
@@ -102,24 +164,104 @@
   </section>
 
   <div id="resize-h" class="resizer resizer-h" title="Drag to resize"></div>
+
   <section id="detail-panel" class="panel">
-    <div class="panel-header">
-      <span id="detail-title">Select a node</span>
-      <div>
-        <button id="btn-show-agents" class="btn" style="font-size:11px;padding:3px 8px">Agents</button>
+    <!-- Side-bar tab navigation -->
+    <nav class="side-tabs">
+      <button class="side-tab active" data-side-tab="details" title="Selected item details">
+        <span class="side-tab-icon">◉</span>
+        <span class="side-tab-label">Details</span>
+      </button>
+      <button class="side-tab" data-side-tab="drafts" title="Draft comments awaiting review">
+        <span class="side-tab-icon">✎</span>
+        <span class="side-tab-label">Drafts</span>
+        <span id="drafts-count" class="side-tab-badge hidden">0</span>
+      </button>
+      <button class="side-tab" data-side-tab="discussions" title="Tracked discussions">
+        <span class="side-tab-icon">◆</span>
+        <span class="side-tab-label">Discussions</span>
+      </button>
+      <button class="side-tab" data-side-tab="issues" title="GitHub issues">
+        <span class="side-tab-icon">◎</span>
+        <span class="side-tab-label">Issues</span>
+      </button>
+      <button class="side-tab" data-side-tab="prs" title="Pull requests">
+        <span class="side-tab-icon">⤴</span>
+        <span class="side-tab-label">PRs</span>
+      </button>
+      <div class="side-tabs-spacer"></div>
+      <button class="side-tab" id="btn-show-agents" title="Running agents">
+        <span class="side-tab-icon">◈</span>
+        <span class="side-tab-label">Agents</span>
+      </button>
+    </nav>
+
+    <!-- Tab panels -->
+    <div class="side-panel">
+      <div class="side-panel-header">
+        <span id="detail-title">Select a node</span>
         <button id="btn-close-detail" class="btn-icon" title="Close">&times;</button>
       </div>
-    </div>
-    <div id="detail-content">
-      <div class="empty-state">Click a node in the graph to view details</div>
+
+      <div class="side-panel-content">
+        <!-- Details panel -->
+        <div class="side-tab-pane active" data-pane="details">
+          <div id="detail-content">
+            <div class="empty-state">
+              <div class="empty-glyph">◎</div>
+              <p>Click a node in the graph</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Drafts -->
+        <div class="side-tab-pane" data-pane="drafts">
+          <div id="drafts-list"></div>
+        </div>
+
+        <!-- Discussions -->
+        <div class="side-tab-pane" data-pane="discussions">
+          <div id="discussions-list"></div>
+        </div>
+
+        <!-- Issues -->
+        <div class="side-tab-pane" data-pane="issues">
+          <div class="list-toolbar">
+            <div class="filter-group">
+              <button class="filter active" data-state="open" data-target="issues">Open</button>
+              <button class="filter" data-state="closed" data-target="issues">Closed</button>
+              <button class="filter" data-state="all" data-target="issues">All</button>
+            </div>
+            <button class="btn btn-compact" onclick="fetchIssues()">↻</button>
+          </div>
+          <div id="issues-list"></div>
+        </div>
+
+        <!-- PRs -->
+        <div class="side-tab-pane" data-pane="prs">
+          <div class="list-toolbar">
+            <div class="filter-group">
+              <button class="filter active" data-state="open" data-target="prs">Open</button>
+              <button class="filter" data-state="closed" data-target="prs">Closed</button>
+              <button class="filter" data-state="merged" data-target="prs">Merged</button>
+              <button class="filter" data-state="all" data-target="prs">All</button>
+            </div>
+            <button class="btn btn-compact" onclick="fetchPRs()">↻</button>
+          </div>
+          <div id="prs-list"></div>
+        </div>
+      </div>
     </div>
   </section>
 </main>
 
 <div id="modal-overlay" class="modal-overlay hidden">
   <div class="modal">
-    <h2>Submit Requirement</h2>
-    <textarea id="input-requirement" rows="6" placeholder="Describe what you want to build..."></textarea>
+    <div class="modal-header">
+      <h2>New Requirement</h2>
+      <button class="btn-icon" id="btn-cancel-icon">&times;</button>
+    </div>
+    <textarea id="input-requirement" rows="8" placeholder="Describe what you want to build…&#10;&#10;Head Leader will analyze and decompose this into implementable features."></textarea>
     <div class="modal-actions">
       <button id="btn-cancel" class="btn">Cancel</button>
       <button id="btn-do-submit" class="btn btn-primary">Submit to Head Leader</button>
@@ -128,12 +270,16 @@
 </div>
 
 <div id="resize-v" class="resizer resizer-v" title="Drag to resize"></div>
+
+<!-- Activity log footer (now only Events + Agent Logs) -->
 <footer id="event-log">
   <div class="log-tabs">
-    <button class="log-tab active" data-tab="events">Events</button>
-    <button class="log-tab" data-tab="agents">Agent Logs</button>
-    <button class="log-tab" data-tab="drafts">Drafts <span id="drafts-count" class="drafts-badge hidden">0</span></button>
-    <button class="log-tab" data-tab="issues">Issues</button>
+    <button class="log-tab active" data-tab="events">
+      <span class="log-tab-icon">◌</span> Events
+    </button>
+    <button class="log-tab" data-tab="agents">
+      <span class="log-tab-icon">◐</span> Agent logs
+    </button>
   </div>
   <div id="tab-events" class="log-tab-content active">
     <div id="log-entries"></div>
@@ -141,24 +287,10 @@
   <div id="tab-agents" class="log-tab-content">
     <div id="agent-log-entries"></div>
   </div>
-  <div id="tab-drafts" class="log-tab-content">
-    <div id="drafts-list"></div>
-  </div>
-  <div id="tab-issues" class="log-tab-content">
-    <div id="issues-toolbar" class="issues-toolbar">
-      <div class="issues-filters">
-        <button class="issues-filter active" data-state="open">Open</button>
-        <button class="issues-filter" data-state="closed">Closed</button>
-        <button class="issues-filter" data-state="all">All</button>
-      </div>
-      <button class="btn" style="font-size:11px;padding:2px 8px" onclick="fetchIssues()">Refresh</button>
-    </div>
-    <div id="issues-list"></div>
-  </div>
 </footer>
 
 </div><!-- /dashboard -->
 
-<script src="/static/app.js?v=2"></script>
+<script src="/static/app.js?v=3"></script>
 </body>
 </html>
