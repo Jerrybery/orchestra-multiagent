@@ -605,6 +605,20 @@ async def push_task_branch(task_id: str):
     return {"pushed": ok}
 
 
+@app.post("/api/tasks/{task_id}/merge")
+async def merge_task_branch(task_id: str):
+    """Merge a task's branch into main and push — without changing task status."""
+    orch = _orch()
+    t = await orch.task_queue.get_task(task_id)
+    if not t:
+        raise HTTPException(404, f"Task {task_id} not found")
+    merged, msg = await orch.worktree.merge_to_main(task_id)
+    pushed = False
+    if merged:
+        pushed = await orch.worktree.push_main()
+    return {"merged": merged, "pushed": pushed, "message": msg}
+
+
 @app.post("/api/git/push-main")
 async def push_main():
     """Push the current main/tracked branch to remote."""

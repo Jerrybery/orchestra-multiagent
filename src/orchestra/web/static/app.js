@@ -703,15 +703,24 @@ async function onNodeClick(node) {
     <dl class="detail-meta">
       <dt>Status</dt>
       <dd><span class="status-badge" style="background:${STATUS_COLORS[task.status]}20;color:${STATUS_COLORS[task.status]}">${task.status}</span></dd>
-      <dt>Branch</dt><dd>
-        <span style="font-family:var(--font-mono)">${task.branch || '-'}</span>
-        ${task.branch ? `<button class="btn btn-compact" style="margin-left:6px" onclick="promptRenameBranch('${task.id}', '${esc(task.branch)}')">Rename</button>` : ''}
-      </dd>
-      <dt>Source issue</dt><dd>${sourceIssueLink}</dd>
+      <dt>Source</dt><dd>${sourceIssueLink}</dd>
       <dt>Agent</dt><dd>${task.assigned_to || '-'}</dd>
       <dt>Dependencies</dt><dd>${task.depends_on.length ? task.depends_on.join(', ') : 'None'}</dd>
     </dl>
   </div>`;
+
+  // Branch management — always visible when branch exists
+  if (task.branch) {
+    html += `<div class="detail-section branch-mgmt">
+      <h3>Branch</h3>
+      <div class="branch-name">${esc(task.branch)}</div>
+      <div class="branch-actions">
+        <button class="btn btn-compact" onclick="promptRenameBranch('${task.id}', '${esc(task.branch)}')">Rename</button>
+        <button class="btn btn-compact" onclick="pushTaskBranch('${task.id}')">Push branch</button>
+        <button class="btn btn-compact" onclick="mergeAndPush('${task.id}')">Merge → main & push</button>
+      </div>
+    </div>`;
+  }
 
   if (task.requirement) {
     html += `<div class="detail-section">
@@ -767,12 +776,7 @@ async function onNodeClick(node) {
     </div>`;
   }
 
-  // Show push-main button for DONE tasks or anytime there might be local merges
-  if (task.status === 'done' || task.status === 'accepted') {
-    html += `<div class="detail-section">
-      <button class="btn" onclick="pushMain()">推送主分支到远程</button>
-    </div>`;
-  }
+  // (push-main is now accessible from the branch management block)
 
   contentEl.innerHTML = html;
 }
@@ -873,6 +877,44 @@ async function reviewTaskAccept(taskId) {
   await fetchGraph();
   const node = graphData.nodes.find(n => n.id === taskId);
   if (node) onNodeClick(node);
+}
+
+async function pushTaskBranch(taskId) {
+  addLogEntry('push_branch', `Pushing ${taskId} branch…`);
+  try {
+    const res = await fetch(`/api/tasks/${taskId}/push`, { method: 'POST' });
+    const data = await res.json();
+    addLogEntry('push_branch', data.pushed ? `${taskId} branch pushed` : `Push failed`);
+    await fetchGraph();
+  } catch (e) {
+    addLogEntry('push_branch', 'Error: ' + e.message);
+  }
+}
+
+async function mergeAndPush(taskId) {
+  if (!confirm(`将 ${taskId} 的分支合并到 main 并推送？`)) return;
+  addLogEntry('merge_push', `Merging ${taskId} to main…`);
+  try {
+    // Use accept flow with merge+push but no PR
+    const res = await fetch(`/api/tasks/${taskId}/merge`, {
+      method: 'POST',
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert('Merge failed: ' + (data.detail || data.message || 'unknown'));
+      addLogEntry('merge_push', `Failed: ${data.detail || data.message || 'unknown'}`);
+      return;
+    }
+    const parts = [];
+    if (data.merged) parts.push('merged');
+    if (data.pushed) parts.push('pushed');
+    addLogEntry('merge_push', `${taskId}: ${parts.join(', ') || data.message || 'done'}`);
+    await fetchGraph();
+    const node = graphData.nodes.find(n => n.id === taskId);
+    if (node) onNodeClick(node);
+  } catch (e) {
+    addLogEntry('merge_push', 'Error: ' + e.message);
+  }
 }
 
 async function pushMain() {
