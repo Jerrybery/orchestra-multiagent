@@ -680,24 +680,41 @@ class Orchestrator:
     # ── Human Review Actions ────────────────────────────────────────
 
     async def accept_task(self, task_id: str, push: bool = True,
-                          create_pr: bool = True) -> None:
-        """Human accepts a task. Options control push and PR creation.
+                          create_pr: bool = True,
+                          merge_local: bool = True) -> dict:
+        """Human accepts a task. Returns a result dict.
 
-        push=False → keep branch local only
-        create_pr=False → push only, no PR
+        merge_local → merge feature branch into main locally (default on)
+        push        → push branch (and merged main) to remote
+        create_pr   → create GitHub PR (requires push)
         """
         await self.task_queue.transition(task_id, TaskStatus.ACCEPTED)
 
         task = await self.task_queue.get_task(task_id)
         branch = self.worktree.get_branch_name(task_id)
 
-        pushed = False
-        if push:
-            pushed = await self.worktree.push_branch(task_id)
+        # 1. Local merge
+        merged = False
+        merge_msg = ""
+        if merge_local:
+            merged, merge_msg = await self.worktree.merge_to_main(task_id)
+            if merged:
+                log.info("Merged %s locally: %s", branch, merge_msg)
+            else:
+                log.warning("Local merge failed for %s: %s", branch, merge_msg)
 
+        # 2. Push
+        pushed_branch = False
+        pushed_main = False
+        if push:
+            pushed_branch = await self.worktree.push_branch(task_id)
+            if merged:
+                pushed_main = await self.worktree.push_main()
+
+        # 3. Create PR (only if NOT merged locally — if merged, code is on main already)
         pr_ok = False
         pr_url = ""
-        if push and create_pr:
+        if push and create_pr and not merged:
             spec = self.context.read_spec(task_id) or ""
             report = self.context.read_report(task_id) or ""
             pr_body = f"## Feature: {task.title}\n\n"
@@ -718,22 +735,21 @@ class Orchestrator:
 
         await self.task_queue.transition(task_id, TaskStatus.DONE)
 
-        event_data = {
+        result = {
             "task_id": task_id,
-            "pushed": pushed,
+            "merged": merged,
+            "merge_message": merge_msg,
+            "pushed_branch": pushed_branch,
+            "pushed_main": pushed_main,
             "pr_created": pr_ok,
             "pr_url": pr_url if pr_ok else None,
         }
-        await self._emit("task_done", event_data)
-        log.info("Task %s done (pushed=%s, pr=%s)", task_id, pushed, pr_ok)
+        await self._emit("task_done", result)
+        log.info("Task %s done: %s", task_id, result)
 
-        # Promote downstream tasks
         promoted = await self.task_queue.promote_ready_tasks()
         if promoted:
             await self._emit("tasks_promoted", {"task_ids": [t.id for t in promoted]})
-
-        if task.requirement_id:
-            await self._maybe_create_idea_branch(task.requirement_id)
 
     async def rename_branch(self, task_id: str, new_name: str) -> tuple[bool, str]:
         """Rename a task's branch. Returns (success, message)."""

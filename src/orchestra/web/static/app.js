@@ -745,12 +745,16 @@ async function onNodeClick(node) {
     html += `<div class="detail-section">
       <h3>Accept Options</h3>
       <label class="checkbox-label" style="font-size:12.5px;margin-bottom:6px">
+        <input type="checkbox" id="accept-merge-${task.id}" checked>
+        合并到本地主分支
+      </label>
+      <label class="checkbox-label" style="font-size:12.5px;margin-bottom:6px">
         <input type="checkbox" id="accept-push-${task.id}" checked>
-        Push branch to remote
+        推送到远程
       </label>
       <label class="checkbox-label" style="font-size:12.5px;margin-bottom:10px">
-        <input type="checkbox" id="accept-pr-${task.id}" checked>
-        Create GitHub PR
+        <input type="checkbox" id="accept-pr-${task.id}">
+        创建 PR（不合并时使用）
       </label>
       <div class="review-actions">
         <button class="btn btn-primary" onclick="reviewTaskAccept('${task.id}')">Accept</button>
@@ -760,6 +764,13 @@ async function onNodeClick(node) {
         <textarea id="reject-reason-${task.id}" rows="3" placeholder="打回理由 — FR 会根据这个反馈重新实现..."></textarea>
         <button class="btn btn-reject" style="margin-top:6px" onclick="reviewTask('${task.id}', 'reject')">Confirm Reject</button>
       </div>
+    </div>`;
+  }
+
+  // Show push-main button for DONE tasks or anytime there might be local merges
+  if (task.status === 'done' || task.status === 'accepted') {
+    html += `<div class="detail-section">
+      <button class="btn" onclick="pushMain()">推送主分支到远程</button>
     </div>`;
   }
 
@@ -839,17 +850,41 @@ function showReject(taskId) {
 }
 
 async function reviewTaskAccept(taskId) {
+  const mergeLocal = document.getElementById(`accept-merge-${taskId}`).checked;
   const push = document.getElementById(`accept-push-${taskId}`).checked;
   const createPr = document.getElementById(`accept-pr-${taskId}`).checked;
-  await fetch(`/api/tasks/${taskId}/review`, {
+
+  addLogEntry('task_accepting', `Accepting ${taskId}…`);
+  const res = await fetch(`/api/tasks/${taskId}/review`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'accept', push, create_pr: createPr }),
+    body: JSON.stringify({ action: 'accept', merge_local: mergeLocal, push, create_pr: createPr }),
   });
-  addLogEntry('task_accepted', `${taskId} accepted (push=${push}, pr=${createPr && push})`);
+  const data = await res.json();
+
+  const parts = [];
+  if (data.merged) parts.push('merged');
+  if (data.pushed_branch) parts.push('pushed branch');
+  if (data.pushed_main) parts.push('pushed main');
+  if (data.pr_created) parts.push(`PR: ${data.pr_url}`);
+  if (data.merge_message && !data.merged) parts.push(`merge: ${data.merge_message}`);
+  addLogEntry('task_accepted', `${taskId}: ${parts.join(', ') || 'done'}`);
+
   await fetchGraph();
   const node = graphData.nodes.find(n => n.id === taskId);
   if (node) onNodeClick(node);
+}
+
+async function pushMain() {
+  addLogEntry('push_main', 'Pushing main to remote…');
+  try {
+    const res = await fetch('/api/git/push-main', { method: 'POST' });
+    const data = await res.json();
+    addLogEntry('push_main', data.pushed ? 'Pushed successfully' : 'Push failed');
+    await fetchGraph();
+  } catch (e) {
+    addLogEntry('push_main', 'Error: ' + e.message);
+  }
 }
 
 async function promptRenameBranch(taskId, currentName) {
