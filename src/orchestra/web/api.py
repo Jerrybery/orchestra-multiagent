@@ -65,9 +65,10 @@ class SubmitRequest(BaseModel):
 class ReviewAction(BaseModel):
     action: str  # "accept" | "reject" | "rename_branch"
     reason: str = ""
-    push: bool = True        # for accept: push branch to remote
-    create_pr: bool = True   # for accept: create GitHub PR
-    new_branch: str = ""     # for rename_branch
+    merge_local: bool = True   # for accept: merge into main locally
+    push: bool = True          # for accept: push to remote
+    create_pr: bool = False    # for accept: create PR (only if NOT merge_local)
+    new_branch: str = ""       # for rename_branch
 
 
 class ProposalAction(BaseModel):
@@ -579,12 +580,13 @@ async def review_task(task_id: str, action: ReviewAction):
         raise HTTPException(400, f"Task {task_id} is not in REVIEW status")
 
     if action.action == "accept":
-        await orch.accept_task(task_id, push=action.push, create_pr=action.create_pr)
-        return {
-            "status": "accepted",
-            "pushed": action.push,
-            "pr_created": action.push and action.create_pr,
-        }
+        result = await orch.accept_task(
+            task_id,
+            merge_local=action.merge_local,
+            push=action.push,
+            create_pr=action.create_pr,
+        )
+        return {"status": "accepted", **result}
     elif action.action == "reject":
         await orch.reject_task(task_id, action.reason)
         return {"status": "rejected"}
@@ -600,6 +602,14 @@ async def push_task_branch(task_id: str):
     if not t:
         raise HTTPException(404, f"Task {task_id} not found")
     ok = await orch.worktree.push_branch(task_id)
+    return {"pushed": ok}
+
+
+@app.post("/api/git/push-main")
+async def push_main():
+    """Push the current main/tracked branch to remote."""
+    orch = _orch()
+    ok = await orch.worktree.push_main()
     return {"pushed": ok}
 
 
