@@ -644,9 +644,23 @@ class Orchestrator:
 
         system_prompt = self._load_prompt(AgentRole.FEATURE_INTERPRETER, task.id)
 
-        task_prompt = f"Verify the implementation of feature {task.id}: {task.title}\n\nThe full spec, architecture, and conventions are in the system prompt above. Review the code in the current directory, run tests, and write the verification report."
-
+        # Inject CLAUDE.md into the worktree so FI has review guidelines
         wt_path = self.context.get_worktree_path(task.id)
+        fi_claude_md = Path(__file__).parent.parent / "fi_workspace_claude.md"
+        if fi_claude_md.exists():
+            target = wt_path / "CLAUDE.md"
+            # Only write if not already present (don't overwrite project's own CLAUDE.md)
+            if not target.exists():
+                target.write_text(fi_claude_md.read_text())
+
+        task_prompt = (
+            f"Verify the implementation of feature {task.id}: {task.title}\n\n"
+            f"The full spec, architecture, and conventions are in the system prompt above.\n\n"
+            f"IMPORTANT: Start by running `git diff --stat main..HEAD` to see what changed, "
+            f"then `git diff main..HEAD` to read the actual code changes. "
+            f"Run all automated checks (tsc, lint, tests, merge markers) BEFORE writing the report."
+        )
+
         handle = await self.spawner.spawn(
             role=AgentRole.FEATURE_INTERPRETER,
             system_prompt=system_prompt,
