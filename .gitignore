@@ -6,3 +6,4 @@ __pycache__/
 *.db
 .orchestra/
 docs/superpowers/specs/
+docs/superpowers/plans/
