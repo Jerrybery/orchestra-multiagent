@@ -17,6 +17,8 @@ from pydantic import BaseModel
 from ..core.orchestrator import Orchestrator, OrchestraConfig
 from ..core.task_queue import TaskStatus
 from ..core.issue_tracker import WatchConfig
+from ..core.run_config import RunConfig, detect_run_config
+from ..core.dev_server import DevServer, DevServerStartupError
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -79,6 +81,13 @@ class ProposalAction(BaseModel):
 class InitRequest(BaseModel):
     project_path: str
     tracked_branch: Optional[str] = None
+
+
+class RunConfigPayload(BaseModel):
+    command: str
+    ready_signal: Optional[str] = None
+    base_url: str = "http://localhost:3000"
+    startup_timeout: int = 60
 
 
 # ── Routes ──────────────────────────────────────────────────────
@@ -186,6 +195,81 @@ async def init_project(req: InitRequest):
         "project_path": str(project_dir),
         "tracked_branch": req.tracked_branch,
     }
+
+
+# ── /api/run_config CRUD + detect + test ───────────────────────────
+
+@app.get("/api/run_config")
+async def get_run_config():
+    """Read the persisted RunConfig. 404 if not set."""
+    orch = _orch()
+    cfg = await orch.context.get_run_config()
+    if not cfg:
+        raise HTTPException(404, "Run config not set")
+    from dataclasses import asdict
+    return asdict(cfg)
+
+
+@app.post("/api/run_config")
+async def save_run_config_endpoint(req: RunConfigPayload):
+    """Persist the supplied RunConfig (marked discovered_by='user_input')."""
+    orch = _orch()
+    cfg = RunConfig(
+        command=req.command,
+        ready_signal=req.ready_signal,
+        base_url=req.base_url,
+        startup_timeout=req.startup_timeout,
+        discovered_by="user_input",
+    )
+    await orch.context.save_run_config(cfg)
+    return {"status": "saved"}
+
+
+@app.get("/api/run_config/detect")
+async def detect_run_config_endpoint():
+    """Auto-detect a run command from project files. 404 if nothing found."""
+    orch = _orch()
+    cfg = detect_run_config(Path(orch.config.project_dir))
+    if cfg is None:
+        raise HTTPException(404, "Could not auto-detect a run command")
+    from dataclasses import asdict
+    return asdict(cfg)
+
+
+@app.post("/api/run_config/test")
+async def test_run_config_endpoint(req: RunConfigPayload):
+    """Spawn a DevServer with the supplied config, verify it starts, then stop.
+
+    On success returns {ok: True}. On startup failure returns
+    {ok: False, error, log_path}. Either way, if a persisted RunConfig already
+    exists, its last_test_at / last_test_ok fields are stamped.
+    """
+    orch = _orch()
+    log_path = orch.context.orchestra_dir / "test_run.log"
+    server = DevServer(
+        cwd=Path(orch.config.project_dir),
+        command=req.command,
+        ready_signal=req.ready_signal,
+        base_url=req.base_url,
+        timeout=req.startup_timeout,
+        log_path=log_path,
+    )
+    try:
+        await server.start()
+        await server.stop()
+        existing = await orch.context.get_run_config()
+        if existing:
+            existing.last_test_at = time.time()
+            existing.last_test_ok = True
+            await orch.context.save_run_config(existing)
+        return {"ok": True}
+    except DevServerStartupError as e:
+        existing = await orch.context.get_run_config()
+        if existing:
+            existing.last_test_at = time.time()
+            existing.last_test_ok = False
+            await orch.context.save_run_config(existing)
+        return {"ok": False, "error": str(e), "log_path": str(log_path)}
 
 
 class CheckoutRequest(BaseModel):
