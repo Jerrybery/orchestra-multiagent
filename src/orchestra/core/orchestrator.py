@@ -68,6 +68,33 @@ async def _git_reset_to(cwd: Path, head: str) -> None:
     await proc2.wait()
 
 
+# Paths commonly written by dev servers (Next.js HMR, Vite, npm, build caches).
+# Used to suppress false "FI modified worktree" violations when the running
+# project itself touches these during the FI window.
+_DEV_ARTIFACT_PATTERNS = (
+    ".next/", "node_modules/", "dist/", "build/", ".vite/", ".cache/",
+    ".turbo/", ".parcel-cache/", "next-env.d.ts", ".DS_Store",
+    "__pycache__/", ".pytest_cache/", ".pyc",
+)
+
+
+def _filter_dev_artifacts(status_output: str) -> str:
+    """Drop porcelain lines for paths that are commonly dev-server byproducts.
+
+    `git status --porcelain` lines start with a 2-char status code + space,
+    so the path begins at column 3. For renames the path may include
+    " -> " — substring match against the whole tail still catches our
+    well-known artifact prefixes correctly.
+    """
+    kept: list[str] = []
+    for line in status_output.splitlines():
+        path = line[3:] if len(line) > 3 else line
+        if any(p in path for p in _DEV_ARTIFACT_PATTERNS):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def _extract_findings_section(md: str, heading: str) -> list[dict]:
     """Find '## {heading}' or '### {heading}' header and read bullet list under it.
 
@@ -893,10 +920,6 @@ class Orchestrator:
             await self._handle_fr_failure(task, "RunConfig missing — re-run setup wizard")
             return
 
-        # Snapshot the worktree state so we can detect FI mutating it.
-        baseline_head = await _git_rev_parse_head(wt_path)
-        baseline_status = await _git_status_porcelain(wt_path)
-
         # Spawn the dev server. Local import avoids a hard module-load
         # dependency chain at orchestrator import time.
         from orchestra.core.dev_server import DevServer, DevServerStartupError
@@ -915,6 +938,15 @@ class Orchestrator:
             log.error("dev server failed for %s: %s", task.id, e)
             await self._handle_fr_failure(task, f"dev server failed to start: {e}")
             return
+
+        # Snapshot AFTER server.start() so dev-server startup byproducts
+        # (.next/, next-env.d.ts, dist/, freshly populated node_modules/)
+        # are part of the baseline and won't read as FI-induced changes.
+        baseline_head = await _git_rev_parse_head(wt_path)
+        baseline_status = await _git_status_porcelain(wt_path)
+
+        current_head = baseline_head
+        current_status = baseline_status
 
         try:
             system_prompt = self._load_prompt(AgentRole.FEATURE_INTERPRETER, task.id)
@@ -947,22 +979,28 @@ class Orchestrator:
             self._running_tasks[task.id] = handle
             result = await self.spawner.wait(handle)
             del self._running_tasks[task.id]
+            # Snapshot BEFORE server.stop() so dev-runtime artifacts written
+            # while the server was up are still visible — _filter_dev_artifacts
+            # below ignores the well-known ones, and any genuine FI mutation
+            # outside that denylist will surface as a real violation.
+            current_head = await _git_rev_parse_head(wt_path)
+            current_status = await _git_status_porcelain(wt_path)
         finally:
             await server.stop()
 
-        # Worktree-violation detection (after server.stop so its byproducts
-        # don't pollute git state).
-        current_head = await _git_rev_parse_head(wt_path)
-        current_status = await _git_status_porcelain(wt_path)
-        violated = (
-            current_head != baseline_head or current_status != baseline_status
+        violated = (current_head != baseline_head) or (
+            _filter_dev_artifacts(current_status)
+            != _filter_dev_artifacts(baseline_status)
         )
 
         if violated:
             await self._emit("fi_violation_modified_worktree", {
                 "task_id": task.id,
                 "new_head": current_head != baseline_head,
-                "dirty": current_status != baseline_status,
+                "dirty": (
+                    _filter_dev_artifacts(current_status)
+                    != _filter_dev_artifacts(baseline_status)
+                ),
             })
             await _git_reset_to(wt_path, baseline_head)
             await self.task_queue.transition(task.id, TaskStatus.REVIEW)
