@@ -734,12 +734,45 @@ class Orchestrator:
                 )
         return handle
 
+    async def _proposal_id_for_task(self, task_id: str) -> Optional[str]:
+        """Return the proposal id whose features contain `task_id`, or None."""
+        async with self.task_queue._db.execute(
+            "SELECT id, features FROM proposals"
+        ) as cur:
+            async for row in cur:
+                features = json.loads(row["features"])
+                if any(f.get("id") == task_id for f in features):
+                    return row["id"]
+        return None
+
     async def _handle_fr_failure(self, task: Task, reason: str) -> None:
-        """Minimal stub. Extended in Phase 4 with sibling freeze + proposal pause."""
+        """Cascade an FR failure: mark task FAILED, freeze unstarted siblings,
+        pause the parent proposal. In-progress siblings are left alone so they
+        can complete naturally."""
         await self.task_queue.transition(
             task.id, TaskStatus.FAILED, fail_reason=reason,
         )
         await self._emit("fr_failed", {"task_id": task.id, "reason": reason})
+
+        proposal_id = await self._proposal_id_for_task(task.id)
+        if not proposal_id:
+            log.warning("Could not find proposal for failed task %s", task.id)
+            return
+
+        siblings = await self.task_queue.get_tasks_for_proposal(proposal_id)
+        for s in siblings:
+            if s.id != task.id and s.status in {TaskStatus.IDEA, TaskStatus.ASSIGNED}:
+                await self.task_queue.transition(
+                    s.id, TaskStatus.FAILED,
+                    fail_reason=f"Cancelled: sibling {task.id} failed",
+                )
+
+        await self.task_queue.update_proposal_status(proposal_id, "paused")
+        await self._emit("proposal_paused", {
+            "proposal_id": proposal_id,
+            "failed_task": task.id,
+            "reason": reason,
+        })
 
     # ── Feature Interpreter ─────────────────────────────────────────
 
