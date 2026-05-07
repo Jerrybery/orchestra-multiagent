@@ -1,6 +1,7 @@
 """Shared fixtures for Orchestra tests."""
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -14,6 +15,10 @@ from orchestra.core.task_queue import TaskQueue
 from orchestra.core.context_manager import ContextManager
 from orchestra.core.worktree_manager import WorktreeManager
 from orchestra.core.orchestrator import Orchestrator, OrchestraConfig
+
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures"
+FAKE_CLAUDE = str(FIXTURE_DIR / "fake_claude.py")
 
 
 @pytest.fixture
@@ -94,3 +99,27 @@ async def orchestrator(orchestra_config):
     await orch.init()
     yield orch
     await orch.close()
+
+
+@pytest.fixture
+def fake_claude_script(tmp_path):
+    """Write a stream-json script and yield its path."""
+    def _write(events: list[dict]) -> Path:
+        p = tmp_path / "claude_script.jsonl"
+        with p.open("w") as f:
+            for e in events:
+                f.write(json.dumps(e) + "\n")
+        return p
+    return _write
+
+
+@pytest.fixture
+def fake_claude_env(monkeypatch, fake_claude_script):
+    """Set FAKE_CLAUDE_SCRIPT and return a function to install a script."""
+    def _install(events, exit_code=0, resume_id=None):
+        path = fake_claude_script(events)
+        monkeypatch.setenv("FAKE_CLAUDE_SCRIPT", str(path))
+        monkeypatch.setenv("FAKE_CLAUDE_EXIT", str(exit_code))
+        if resume_id:
+            monkeypatch.setenv("FAKE_CLAUDE_RESUME_ID", resume_id)
+    return _install
