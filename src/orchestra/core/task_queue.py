@@ -116,18 +116,20 @@ class TaskStatus(str, enum.Enum):
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     DONE = "done"
+    FAILED = "failed"
 
 
 # Valid state transitions
 TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
-    TaskStatus.IDEA: {TaskStatus.ASSIGNED},
-    TaskStatus.ASSIGNED: {TaskStatus.IN_PROGRESS},
-    TaskStatus.IN_PROGRESS: {TaskStatus.IMPLEMENTED},
+    TaskStatus.IDEA: {TaskStatus.ASSIGNED, TaskStatus.FAILED},
+    TaskStatus.ASSIGNED: {TaskStatus.IN_PROGRESS, TaskStatus.FAILED},
+    TaskStatus.IN_PROGRESS: {TaskStatus.IMPLEMENTED, TaskStatus.FAILED},
     TaskStatus.IMPLEMENTED: {TaskStatus.TESTING},
-    TaskStatus.TESTING: {TaskStatus.REVIEW},
+    TaskStatus.TESTING: {TaskStatus.REVIEW, TaskStatus.FAILED},  # FAILED for dev server crashes during FI
     TaskStatus.REVIEW: {TaskStatus.ACCEPTED, TaskStatus.REJECTED},
     TaskStatus.REJECTED: {TaskStatus.ASSIGNED},
     TaskStatus.ACCEPTED: {TaskStatus.DONE},
+    TaskStatus.FAILED: {TaskStatus.ASSIGNED},
 }
 
 
