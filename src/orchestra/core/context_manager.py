@@ -114,3 +114,23 @@ class ContextManager:
             env["report_file"] = str(self.get_report_path(task_id))
 
         return env
+
+    # ------------------------------------------------------------------
+    # RunConfig persistence + dev_server log paths
+    # ------------------------------------------------------------------
+
+    def get_run_config_path(self) -> Path:
+        return self.orchestra_dir / "run_config.json"
+
+    async def get_run_config(self):
+        from orchestra.core.run_config import load_run_config
+        return load_run_config(self.get_run_config_path())
+
+    async def save_run_config(self, cfg) -> None:
+        from orchestra.core.run_config import save_run_config
+        save_run_config(cfg, self.get_run_config_path())
+
+    def get_dev_server_log_path(self, task_id: str) -> Path:
+        d = self.orchestra_dir / "dev_server_logs"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{task_id}.log"
