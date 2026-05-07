@@ -63,6 +63,7 @@ class Orchestrator:
             max_turns=config.max_turns,
             model=config.model,
             on_output=self._on_agent_output,
+            on_session_id=self._on_session_id,
         )
         self._running_tasks: dict[str, AgentHandle] = {}  # task_id -> handle
         self._on_event: Optional[Callable[[str, dict], Awaitable[None]]] = None
@@ -142,6 +143,19 @@ class Orchestrator:
             "stream": stream,
             "line": stripped[:500],  # truncate very long lines
         })
+
+    async def _on_session_id(self, agent_id: str, sid: str) -> None:
+        """Persist session_id when AgentSpawner emits one for an FR run.
+
+        Reverse-looks up which task this agent_id is running for, and only
+        persists when the role is FEATURE_REALIZER (FI/HL/DA session_ids
+        are not tracked on the task table).
+        """
+        for task_id, handle in self._running_tasks.items():
+            if (handle.agent_id == agent_id
+                    and handle.role == AgentRole.FEATURE_REALIZER):
+                await self.task_queue.set_fr_session_id(task_id, sid)
+                return
 
     async def _emit(self, event: str, data: dict) -> None:
         log.info("Event: %s %s", event, json.dumps(data, default=str))
