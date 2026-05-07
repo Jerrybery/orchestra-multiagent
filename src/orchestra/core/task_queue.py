@@ -212,6 +212,8 @@ class Task:
     source_issue: Optional[int] = None  # GitHub issue that originated this work
     created_at: float = 0.0
     updated_at: float = 0.0
+    fr_session_id: Optional[str] = None
+    fail_reason: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: aiosqlite.Row) -> Task:
@@ -242,6 +244,27 @@ class TaskQueue:
             cols = {row["name"] async for row in cur}
         if "source_issue" not in cols:
             await self._db.execute("ALTER TABLE tasks ADD COLUMN source_issue INTEGER")
+        if "fr_session_id" not in cols:
+            await self._db.execute("ALTER TABLE tasks ADD COLUMN fr_session_id TEXT")
+        if "fail_reason" not in cols:
+            await self._db.execute("ALTER TABLE tasks ADD COLUMN fail_reason TEXT")
+        # review_findings table
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS review_findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                round INTEGER NOT NULL,
+                recommendation TEXT NOT NULL,
+                critical TEXT,
+                important TEXT,
+                report_path TEXT,
+                created_at REAL,
+                FOREIGN KEY (task_id) REFERENCES tasks(id)
+            )
+        """)
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_review_findings_task ON review_findings (task_id, round)"
+        )
 
     async def close(self) -> None:
         if self._db:
