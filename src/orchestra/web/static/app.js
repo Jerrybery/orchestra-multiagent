@@ -1269,9 +1269,13 @@ async function setupInit() {
     }
 
     const data = await res.json();
-    // Stash project path so Step 3 → reload lands on the dashboard.
-    window._setupProjectPath = data.project_path;
-    setupShowStep3();
+    // If a RunConfig already exists (re-initialized project), skip Step 3.
+    const rcResp = await fetch('/api/run_config');
+    if (rcResp.ok) {
+      showDashboard(data.project_path);
+    } else {
+      setupShowStep3();
+    }
   } catch (e) {
     alert('Error: ' + e.message);
     btn.disabled = false;
