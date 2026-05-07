@@ -451,6 +451,43 @@ class TaskQueue:
         )
         await self._db.commit()
 
+    # ── Review Findings ─────────────────────────────────────
+
+    async def add_review_finding(
+        self,
+        task_id: str,
+        round: int,
+        recommendation: str,
+        critical: list[dict],
+        important: list[dict],
+        report_path: str,
+    ) -> None:
+        await self._db.execute(
+            """INSERT INTO review_findings
+               (task_id, round, recommendation, critical, important, report_path, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (task_id, round, recommendation,
+             json.dumps(critical), json.dumps(important),
+             report_path, time.time()),
+        )
+        await self._db.commit()
+
+    async def get_latest_review_finding(self, task_id: str) -> Optional[dict]:
+        async with self._db.execute(
+            "SELECT * FROM review_findings WHERE task_id = ? ORDER BY round DESC LIMIT 1",
+            (task_id,),
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def get_review_finding(self, task_id: str, round: int) -> Optional[dict]:
+        async with self._db.execute(
+            "SELECT * FROM review_findings WHERE task_id = ? AND round = ?",
+            (task_id, round),
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
     async def get_tasks_for_proposal(self, proposal_id: str) -> list[Task]:
         """Return all materialized tasks for the features in a proposal.
 
