@@ -774,6 +774,27 @@ class Orchestrator:
             "reason": reason,
         })
 
+    async def retry_failed_task(self, task_id: str) -> None:
+        """Retry a FAILED task: move it back to ASSIGNED, clear fail_reason,
+        and auto-unpause the parent proposal once no FAILED siblings remain."""
+        task = await self.task_queue.get_task(task_id)
+        if not task or task.status != TaskStatus.FAILED:
+            raise ValueError(f"Task {task_id} is not in FAILED state")
+
+        await self.task_queue.transition(
+            task_id, TaskStatus.ASSIGNED, fail_reason=None
+        )
+        await self._emit("task_retry_started", {"task_id": task_id})
+
+        # Auto-resume proposal if no FAILED left
+        proposal_id = await self._proposal_id_for_task(task_id)
+        if proposal_id:
+            siblings = await self.task_queue.get_tasks_for_proposal(proposal_id)
+            still_failed = [s for s in siblings if s.status == TaskStatus.FAILED]
+            if not still_failed:
+                await self.task_queue.update_proposal_status(proposal_id, "approved")
+                await self._emit("proposal_resumed", {"proposal_id": proposal_id})
+
     # ── Feature Interpreter ─────────────────────────────────────────
 
     async def _run_fi(self, task: Task) -> None:
