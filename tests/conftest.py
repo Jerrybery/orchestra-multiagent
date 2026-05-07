@@ -123,3 +123,56 @@ def fake_claude_env(monkeypatch, fake_claude_script):
         if resume_id:
             monkeypatch.setenv("FAKE_CLAUDE_RESUME_ID", resume_id)
     return _install
+
+
+@pytest_asyncio.fixture
+async def fr_task_implemented(orchestrator, tmp_path):
+    """A task in IMPLEMENTED state with a real git worktree.
+
+    Used by FI tests: the worktree has an initial commit on `main` so that
+    `_git_rev_parse_head` and `_git_status_porcelain` return real values.
+    The orchestrator's `context.get_worktree_path` is monkeypatched to point
+    at this temp worktree so FI runs against it.
+    """
+    from orchestra.core.task_queue import TaskStatus
+
+    await orchestrator.task_queue.add_requirement("r1", "x")
+    await orchestrator.task_queue.add_proposal(
+        "p1", "r1", features=[{"id": "ti", "title": "X"}]
+    )
+    await orchestrator.task_queue.add_task(
+        "ti", title="X", priority=0, depends_on=[], requirement_id="r1"
+    )
+    await orchestrator.task_queue.update_proposal_status("p1", "approved")
+    await orchestrator.task_queue.transition("ti", TaskStatus.ASSIGNED)
+    await orchestrator.task_queue.transition("ti", TaskStatus.IN_PROGRESS)
+    await orchestrator.task_queue.transition("ti", TaskStatus.IMPLEMENTED)
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    subprocess.check_call(["git", "init", "-b", "main"], cwd=wt)
+    (wt / "x.py").write_text("# initial")
+    subprocess.check_call(["git", "add", "."], cwd=wt)
+    subprocess.check_call(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-m", "init"],
+        cwd=wt,
+    )
+    orchestrator.context.get_worktree_path = lambda tid: wt
+    return await orchestrator.task_queue.get_task("ti")
+
+
+@pytest_asyncio.fixture
+async def run_config_set(orchestrator):
+    """Persist a RunConfig that produces a fake dev server which:
+    - prints the ready signal immediately, then sleeps so it stays up,
+    - allows DevServer.start() to return quickly via ready_signal matching.
+    """
+    from orchestra.core.run_config import RunConfig
+    cfg = RunConfig(
+        command='python -c "import time; print(\'Ready in 0.1s\', flush=True); time.sleep(30)"',
+        ready_signal="Ready in",
+        base_url="http://localhost:9999",
+        startup_timeout=5,
+    )
+    await orchestrator.context.save_run_config(cfg)

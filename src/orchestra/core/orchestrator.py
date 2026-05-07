@@ -35,6 +35,70 @@ def _parse_agent_result(output: str) -> Optional[dict]:
     return None
 
 
+# ── Git helpers (module-level, used by FI worktree-violation detection) ──
+
+async def _git_rev_parse_head(cwd: Path) -> str:
+    proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", "HEAD", cwd=str(cwd),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await proc.communicate()
+    return out.decode().strip()
+
+
+async def _git_status_porcelain(cwd: Path) -> str:
+    proc = await asyncio.create_subprocess_exec(
+        "git", "status", "--porcelain", cwd=str(cwd),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await proc.communicate()
+    return out.decode()
+
+
+async def _git_reset_to(cwd: Path, head: str) -> None:
+    proc = await asyncio.create_subprocess_exec(
+        "git", "reset", "--hard", head, cwd=str(cwd),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+    )
+    await proc.wait()
+    proc2 = await asyncio.create_subprocess_exec(
+        "git", "clean", "-fd", cwd=str(cwd),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+    )
+    await proc2.wait()
+
+
+def _extract_findings_section(md: str, heading: str) -> list[dict]:
+    """Find '## {heading}' or '### {heading}' header and read bullet list under it.
+
+    Each bullet is parsed as 'file:line — description' when possible; otherwise
+    stored as a free-text desc with file='' and line=0.
+    """
+    pattern = re.compile(rf"^#{{2,4}}\s*{re.escape(heading)}.*$", re.MULTILINE)
+    m = pattern.search(md)
+    if not m:
+        return []
+    body = md[m.end():]
+    next_heading = re.search(r"^#{2,4}\s", body, re.MULTILINE)
+    if next_heading:
+        body = body[:next_heading.start()]
+    items: list[dict] = []
+    for line in body.splitlines():
+        line = line.strip()
+        if line.startswith(("- ", "* ")):
+            content = line[2:].strip()
+            mm = re.match(r"^([^:]+):(\d+)\s*[—-]\s*(.+)$", content)
+            if mm:
+                items.append({
+                    "file": mm.group(1),
+                    "line": int(mm.group(2)),
+                    "desc": mm.group(3),
+                })
+            else:
+                items.append({"file": "", "line": 0, "desc": content})
+    return items
+
+
 @dataclass
 class OrchestraConfig:
     project_dir: Path          # Where the user's git repo lives (or will be created)
@@ -70,6 +134,9 @@ class Orchestrator:
         self._stop = False
         self.tracker: Optional[IssueTracker] = None
         self._tracker_task: Optional[asyncio.Task] = None
+        # Serializes FI runs: only one Feature Interpreter is active at a time
+        # (the dev server it spawns binds the project port).
+        self._fi_lock = asyncio.Lock()
 
     async def init(self) -> None:
         """Initialize all subsystems."""
@@ -798,11 +865,19 @@ class Orchestrator:
     # ── Feature Interpreter ─────────────────────────────────────────
 
     async def _run_fi(self, task: Task) -> None:
-        """Run a Feature Interpreter for a single task."""
+        """Run a Feature Interpreter for a single task.
+
+        Wrapped in `self._fi_lock` so only one FI runs at a time (the dev
+        server it spawns binds the project port). The actual body lives in
+        `_run_fi_inner`.
+        """
+        async with self._fi_lock:
+            await self._run_fi_inner(task)
+
+    async def _run_fi_inner(self, task: Task) -> None:
+        """FI body: dev server lifecycle, findings injection, violation detection."""
         await self.task_queue.transition(task.id, TaskStatus.TESTING)
         await self._emit("fi_start", {"task_id": task.id})
-
-        system_prompt = self._load_prompt(AgentRole.FEATURE_INTERPRETER, task.id)
 
         # Inject CLAUDE.md into the worktree so FI has review guidelines
         wt_path = self.context.get_worktree_path(task.id)
@@ -813,43 +888,168 @@ class Orchestrator:
             if not target.exists():
                 target.write_text(fi_claude_md.read_text())
 
-        task_prompt = (
-            f"Verify the implementation of feature {task.id}: {task.title}\n\n"
-            f"The full spec, architecture, and conventions are in the system prompt above.\n\n"
-            f"IMPORTANT: Start by running `git diff --stat main..HEAD` to see what changed, "
-            f"then `git diff main..HEAD` to read the actual code changes. "
-            f"Run all automated checks (tsc, lint, tests, merge markers) BEFORE writing the report."
-        )
+        run_cfg = await self.context.get_run_config()
+        if not run_cfg:
+            await self._handle_fr_failure(task, "RunConfig missing — re-run setup wizard")
+            return
 
-        handle = await self.spawner.spawn(
-            role=AgentRole.FEATURE_INTERPRETER,
-            system_prompt=system_prompt,
-            task_prompt=task_prompt,
+        # Snapshot the worktree state so we can detect FI mutating it.
+        baseline_head = await _git_rev_parse_head(wt_path)
+        baseline_status = await _git_status_porcelain(wt_path)
+
+        # Spawn the dev server. Local import avoids a hard module-load
+        # dependency chain at orchestrator import time.
+        from orchestra.core.dev_server import DevServer, DevServerStartupError
+        dev_log = self.context.get_dev_server_log_path(task.id)
+        server = DevServer(
             cwd=wt_path,
-            task_id=task.id,
-            log_path=self.context.get_log_path(f"fi-{task.id}"),
-            add_dirs=[wt_path, self.context.orchestra_dir],
+            command=run_cfg.command,
+            ready_signal=run_cfg.ready_signal,
+            base_url=run_cfg.base_url,
+            timeout=run_cfg.startup_timeout,
+            log_path=dev_log,
         )
-        self._running_tasks[task.id] = handle
+        try:
+            await server.start()
+        except DevServerStartupError as e:
+            log.error("dev server failed for %s: %s", task.id, e)
+            await self._handle_fr_failure(task, f"dev server failed to start: {e}")
+            return
 
-        result = await self.spawner.wait(handle)
-        del self._running_tasks[task.id]
+        try:
+            system_prompt = self._load_prompt(AgentRole.FEATURE_INTERPRETER, task.id)
+            system_prompt = system_prompt.replace("{base_url}", run_cfg.base_url)
+            system_prompt = system_prompt.replace("{dev_server_log_path}", str(dev_log))
+
+            prev_findings = await self.task_queue.get_latest_review_finding(task.id)
+            findings_block = (
+                self._render_previous_findings(prev_findings) if prev_findings else ""
+            )
+
+            task_prompt = (
+                f"Verify the implementation of feature {task.id}: {task.title}\n\n"
+                f"The dev server is running at {run_cfg.base_url}.\n"
+                f"Dev server log: {dev_log}\n\n"
+                f"Run `git diff --stat main..HEAD` and `git diff main..HEAD` to see the changes.\n"
+                f"Then follow Step 3a/3b/3c in the system prompt above.\n"
+                f"{findings_block}"
+            )
+
+            handle = await self.spawner.spawn(
+                role=AgentRole.FEATURE_INTERPRETER,
+                system_prompt=system_prompt,
+                task_prompt=task_prompt,
+                cwd=wt_path,
+                task_id=task.id,
+                log_path=self.context.get_log_path(f"fi-{task.id}"),
+                add_dirs=[wt_path, self.context.orchestra_dir],
+            )
+            self._running_tasks[task.id] = handle
+            result = await self.spawner.wait(handle)
+            del self._running_tasks[task.id]
+        finally:
+            await server.stop()
+
+        # Worktree-violation detection (after server.stop so its byproducts
+        # don't pollute git state).
+        current_head = await _git_rev_parse_head(wt_path)
+        current_status = await _git_status_porcelain(wt_path)
+        violated = (
+            current_head != baseline_head or current_status != baseline_status
+        )
+
+        if violated:
+            await self._emit("fi_violation_modified_worktree", {
+                "task_id": task.id,
+                "new_head": current_head != baseline_head,
+                "dirty": current_status != baseline_status,
+            })
+            await _git_reset_to(wt_path, baseline_head)
+            await self.task_queue.transition(task.id, TaskStatus.REVIEW)
+            await self.task_queue.transition(
+                task.id, TaskStatus.REJECTED,
+                reject_reason=(
+                    "FI modified the worktree, which is forbidden. "
+                    "Re-running with stricter constraint."
+                ),
+            )
+            await self._emit("fi_done", {
+                "task_id": task.id, "recommendation": "reject",
+            })
+            return
 
         parsed = _parse_agent_result(result.stdout)
-
-        # Move to REVIEW
-        await self.task_queue.transition(task.id, TaskStatus.REVIEW)
         recommendation = parsed.get("recommendation", "unknown") if parsed else "unknown"
+        critical, important = self._parse_findings_from_report(task.id)
+
+        round_n = await self._next_review_round(task.id)
+        await self.task_queue.add_review_finding(
+            task_id=task.id,
+            round=round_n,
+            recommendation=recommendation,
+            critical=critical,
+            important=important,
+            report_path=str(self.context.get_report_path(task.id)),
+        )
+
+        await self.task_queue.transition(task.id, TaskStatus.REVIEW)
         await self._emit("fi_done", {
             "task_id": task.id,
             "recommendation": recommendation,
             "report": str(self.context.get_report_path(task.id)),
         })
 
-        # Auto-accept if pass_whatever mode is on
         if self.config.auto_accept:
             log.info("Auto-accepting %s (pass_whatever mode)", task.id)
             await self.accept_task(task.id)
+
+    # ── FI helpers ──────────────────────────────────────────────────
+
+    def _render_previous_findings(self, finding: dict) -> str:
+        """Render a prior round's findings into a markdown block to append to
+        the FI task prompt. Returns '' when there is nothing material."""
+        critical = finding.get("critical") or []
+        important = finding.get("important") or []
+        if not critical and not important:
+            return ""
+        out = [
+            "\n## Previous Review Findings (round {})".format(finding["round"]),
+            "This task was previously rejected. The previous reviewer identified:\n",
+        ]
+        if critical:
+            out.append("Critical:")
+            for it in critical:
+                out.append(
+                    f"- {it.get('file','?')}:{it.get('line','?')} — {it.get('desc','')}"
+                )
+        if important:
+            out.append("\nImportant:")
+            for it in important:
+                out.append(
+                    f"- {it.get('file','?')}:{it.get('line','?')} — {it.get('desc','')}"
+                )
+        out.append("\nVerify these specific issues are addressed in the current diff.")
+        out.append(
+            "You are NOT bound by the previous reviewer's overall verdict — "
+            "re-evaluate independently."
+        )
+        return "\n".join(out)
+
+    async def _next_review_round(self, task_id: str) -> int:
+        latest = await self.task_queue.get_latest_review_finding(task_id)
+        return (latest["round"] + 1) if latest else 1
+
+    def _parse_findings_from_report(self, task_id: str) -> tuple[list, list]:
+        report_path = self.context.get_report_path(task_id)
+        if not report_path.exists():
+            return [], []
+        try:
+            text = report_path.read_text()
+        except OSError:
+            return [], []
+        critical = _extract_findings_section(text, "Critical")
+        important = _extract_findings_section(text, "Important")
+        return critical, important
 
     # ── Human Review Actions ────────────────────────────────────────
 
