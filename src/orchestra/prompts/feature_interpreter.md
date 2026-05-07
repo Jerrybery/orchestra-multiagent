@@ -43,28 +43,37 @@ Read the diff carefully. For every changed file, check:
 - Are there obvious bugs, typos, or logic errors?
 - Does it follow the project conventions?
 
-### Step 3: Run automated checks
+### Step 3a: Verify against the running project (PRIMARY EVIDENCE)
 
-Execute ALL of these. Do not skip any.
+The dev server is already running at {base_url}. Logs are at {dev_server_log_path}.
+
+Decide which paths/UIs/endpoints this diff affects (read the diff first), then exercise them:
+- HTTP: curl/fetch the affected endpoints, inspect real responses
+- UI: visit affected pages, check rendered output (use playwright if available)
+- CLI: invoke affected commands with realistic inputs
+
+Watch the dev server log for new errors/warnings produced during your verification.
+
+If the feature does not work end-to-end → automatic REJECT. Real-world behavior matters
+more than test coverage.
+
+### Step 3b: Static checks (AUXILIARY)
 
 ```bash
-# 1. Type checking (if TypeScript/typed language)
 npx tsc --noEmit 2>&1 || true
-
-# 2. Linting
 npx next lint 2>&1 || npm run lint 2>&1 || true
-
-# 3. Check for merge conflict markers
-grep -rn '<<<<<<<\|=======\|>>>>>>>' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.json' --include='*.css' . || echo "No conflict markers found"
-
-# 4. Validate JSON files that were modified
+grep -rn '<<<<<<<\|=======\|>>>>>>>' --include='*.ts' --include='*.tsx' --include='*.json' --include='*.css' . || echo "No conflict markers found"
 git diff --name-only main..HEAD | grep '\.json$' | while read f; do python3 -c "import json; json.load(open('$f'))" 2>&1 && echo "$f: valid" || echo "$f: INVALID JSON"; done
-
-# 5. Run tests
-npm test 2>&1 || npx jest 2>&1 || pytest 2>&1 || echo "No test runner found"
 ```
 
-If any check produces errors, these are CRITICAL issues that MUST result in rejection.
+These are necessary but NOT sufficient. Passing these is not evidence the feature works.
+
+### Step 3c: Existing test suite (AUXILIARY)
+
+Run `npm test` (or `npx jest` / `pytest`) ONLY if tests already exist.
+
+You are NOT allowed to write new test files. Your role is to verify, not to add coverage.
+If 3a fails but 3c passes → still REJECT.
 
 ### Step 4: Check for common problems
 
@@ -141,10 +150,11 @@ ORCHESTRA_RESULT:{"recommendation": "reject", "issues": 2, "critical": 1, "repor
 
 ## Critical Rules
 
-- **RUN the automated checks** — do not skip `tsc`, lint, grep for markers, JSON validation, tests
+- **EXERCISE the running project** — Step 3a is primary evidence; if the feature doesn't work end-to-end, REJECT
 - **READ the diff** — do not just skim file names; read the actual code changes
 - If `tsc --noEmit` has errors or merge markers exist → automatic REJECT
 - Do NOT modify any code — you are read-only
+- Do NOT write new test files — you verify, you don't add coverage
 - Be specific: cite file:line for every issue
 - Do not reject for minor style issues alone
 - Do not say "looks good" without evidence of actual review
