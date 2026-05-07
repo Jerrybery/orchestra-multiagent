@@ -428,7 +428,8 @@ class TaskQueue:
         sets = ["status = ?", "updated_at = ?"]
         params: list = [new_status.value, time.time()]
 
-        for col in ("assigned_to", "branch", "worktree_path", "reject_reason"):
+        for col in ("assigned_to", "branch", "worktree_path",
+                    "reject_reason", "fail_reason", "fr_session_id"):
             if col in kwargs:
                 sets.append(f"{col} = ?")
                 params.append(kwargs[col])
@@ -439,6 +440,33 @@ class TaskQueue:
         )
         await self._db.commit()
         return await self.get_task(task_id)
+
+    async def set_fr_session_id(self, task_id: str, sid: Optional[str]) -> None:
+        """Persist the FR (Feature Realizer) Claude session id for a task.
+
+        Pass `None` to clear it.
+        """
+        await self._db.execute(
+            "UPDATE tasks SET fr_session_id = ? WHERE id = ?", (sid, task_id)
+        )
+        await self._db.commit()
+
+    async def get_tasks_for_proposal(self, proposal_id: str) -> list[Task]:
+        """Return all materialized tasks for the features in a proposal.
+
+        Returns `[]` if the proposal does not exist or has no features.
+        """
+        prop = await self.get_proposal(proposal_id)
+        if not prop:
+            return []
+        feature_ids = [f["id"] for f in prop.features]
+        if not feature_ids:
+            return []
+        placeholders = ",".join("?" * len(feature_ids))
+        async with self._db.execute(
+            f"SELECT * FROM tasks WHERE id IN ({placeholders})", feature_ids
+        ) as cur:
+            return [Task.from_row(row) async for row in cur]
 
     async def get_ready_tasks(self) -> list[Task]:
         """Get IDEA tasks whose dependencies are all DONE."""
