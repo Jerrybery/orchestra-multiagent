@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 
 # Type for the line callback: (agent_id, stream, line) -> None
 LineCallback = Callable[[str, str, str], Awaitable[None]]
+SessionIdCallback = Callable[[str, str], Awaitable[None]]
 
 
 class AgentRole(str, Enum):
@@ -70,6 +71,7 @@ class AgentHandle:
     result_text: str = ""
     # Temp files to clean up after process ends
     _temp_files: list = field(default_factory=list)
+    session_id: Optional[str] = None
 
 
 def _summarize_stream_event(data: dict) -> Optional[str]:
@@ -129,11 +131,13 @@ class AgentSpawner:
         max_turns: int = 50,
         model: str = "sonnet",
         on_output: Optional[LineCallback] = None,
+        on_session_id: Optional[SessionIdCallback] = None,
     ):
         self.claude_cmd = claude_cmd
         self.max_turns = max_turns
         self.model = model
         self.on_output = on_output
+        self.on_session_id = on_session_id
         self._agents: dict[str, AgentHandle] = {}
         self._counter = 0
 
@@ -151,6 +155,7 @@ class AgentSpawner:
         log_path: Optional[Path] = None,
         add_dirs: list[str | Path] | None = None,
         model: Optional[str] = None,
+        extra_args: list[str] | None = None,
     ) -> AgentHandle:
         """Spawn a Claude Code subprocess with stream-json output."""
         agent_id = self._next_id(role)
@@ -178,6 +183,9 @@ class AgentSpawner:
         if add_dirs:
             for d in add_dirs:
                 cmd.extend(["--add-dir", str(d)])
+
+        if extra_args:
+            cmd.extend(extra_args)
 
         # Task prompt via stdin (not positional arg) — avoids length limits and escaping issues
         log.info("[%s] Spawning in %s (model=%s): %s", agent_id, cwd, effective_model, task_prompt[:80])
@@ -227,6 +235,16 @@ class AgentSpawner:
                     if self.on_output:
                         await self._safe_callback(handle.agent_id, "stdout", line)
                 continue
+
+            if data.get("type") == "system":
+                sid = data.get("session_id")
+                if sid and not handle.session_id:
+                    handle.session_id = sid
+                    if self.on_session_id:
+                        try:
+                            await self.on_session_id(handle.agent_id, sid)
+                        except Exception:
+                            log.exception("on_session_id callback failed")
 
             # Extract the final result text
             if data.get("type") == "result":
