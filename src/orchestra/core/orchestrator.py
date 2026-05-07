@@ -591,14 +591,19 @@ class Orchestrator:
     # ── Feature Realizer ────────────────────────────────────────────
 
     async def _run_fr(self, task: Task) -> None:
-        """Run a Feature Realizer for a single task."""
-        # Create worktree
+        """Run a Feature Realizer for a single task.
+
+        On a re-run after rejection (reject_reason + fr_session_id present),
+        uses --resume with a minimal feedback-only prompt instead of rebuilding
+        the full system+spec prompt. If the resume itself fails fast (process
+        exits non-zero within ~2s, e.g. session not found), falls back to a
+        fresh run with the full prompt and no --resume flag.
+        """
         wt_path = await self.worktree.create_worktree(
             task.id, title=task.title, source_issue=task.source_issue,
         )
         branch = self.worktree.get_branch_name(task.id)
 
-        # Transition to IN_PROGRESS
         await self.task_queue.transition(
             task.id, TaskStatus.IN_PROGRESS,
             worktree_path=str(wt_path),
@@ -606,21 +611,43 @@ class Orchestrator:
         )
         await self._emit("fr_start", {"task_id": task.id, "title": task.title})
 
-        system_prompt = self._load_prompt(AgentRole.FEATURE_REALIZER, task.id)
+        use_resume = (
+            task.reject_reason is not None
+            and task.fr_session_id is not None
+        )
 
-        task_prompt = f"Implement feature {task.id}: {task.title}\n\nThe full spec, architecture, conventions, and API contracts are in the system prompt above. Start implementing."
+        if use_resume:
+            # Minimal prompt: just the reviewer feedback. The agent already has
+            # full project context via the resumed session. System prompt is
+            # not needed (and would be ignored on --resume anyway).
+            task_prompt = (
+                f"This implementation was rejected. Address the following feedback:\n\n"
+                f"{task.reject_reason}\n\n"
+                f"Make the changes and report back when done."
+            )
+            system_prompt = ""
+            extra_args = ["--resume", task.fr_session_id]
+        else:
+            system_prompt = self._load_prompt(AgentRole.FEATURE_REALIZER, task.id)
+            task_prompt = (
+                f"Implement feature {task.id}: {task.title}\n\n"
+                f"The full spec, architecture, conventions, and API contracts are in "
+                f"the system prompt above. Start implementing."
+            )
+            if task.reject_reason:
+                task_prompt += (
+                    f"\n\n## Previous Review Feedback\n"
+                    f"This feature was previously rejected. Reason:\n{task.reject_reason}\n\n"
+                    f"Please address this feedback."
+                )
+            extra_args = []
 
-        if task.reject_reason:
-            task_prompt += f"\n\n## Previous Review Feedback\nThis feature was previously rejected. Reason:\n{task.reject_reason}\n\nPlease address this feedback."
-
-        handle = await self.spawner.spawn(
-            role=AgentRole.FEATURE_REALIZER,
+        handle = await self._spawn_fr_with_resume_fallback(
+            task=task,
+            wt_path=wt_path,
             system_prompt=system_prompt,
             task_prompt=task_prompt,
-            cwd=wt_path,
-            task_id=task.id,
-            log_path=self.context.get_log_path(f"fr-{task.id}"),
-            add_dirs=[wt_path, self.context.orchestra_dir],
+            extra_args=extra_args,
         )
         self._running_tasks[task.id] = handle
 
@@ -632,12 +659,11 @@ class Orchestrator:
         if parsed and parsed.get("status") == "blocked":
             reason = parsed.get("reason", "Unknown blocker")
             log.error("FR blocked for %s: %s", task.id, reason)
-            await self._emit("fr_failed", {"task_id": task.id, "reason": reason})
+            await self._handle_fr_failure(task, reason)
         elif result.exit_code == 0:
             # Success — even if no structured output, exit 0 means it completed
             await self.task_queue.transition(task.id, TaskStatus.IMPLEMENTED)
             notes = parsed.get("notes", "") if parsed else "no structured output"
-
             # Do NOT auto-push. User decides at review time whether to push
             # and whether to create a PR.
             await self._emit("fr_done", {"task_id": task.id, "notes": notes})
@@ -647,7 +673,73 @@ class Orchestrator:
             if parsed:
                 reason = parsed.get("reason", reason)
             log.error("FR failed for %s: %s", task.id, reason)
-            await self._emit("fr_failed", {"task_id": task.id, "reason": reason})
+            await self._handle_fr_failure(task, reason)
+
+    async def _spawn_fr_with_resume_fallback(
+        self,
+        *,
+        task: Task,
+        wt_path: Path,
+        system_prompt: str,
+        task_prompt: str,
+        extra_args: list[str],
+    ) -> AgentHandle:
+        """Spawn an FR; if --resume was requested but the process dies fast,
+        clear fr_session_id and respawn fresh with the full prompt.
+
+        The 2s probe is a race window: claude returns very quickly if the
+        session is missing/expired (typically <500ms), but legitimate runs
+        won't have exited within 2s. Only resume invocations are probed —
+        fresh spawns return immediately.
+        """
+        handle = await self.spawner.spawn(
+            role=AgentRole.FEATURE_REALIZER,
+            system_prompt=system_prompt,
+            task_prompt=task_prompt,
+            cwd=wt_path,
+            task_id=task.id,
+            log_path=self.context.get_log_path(f"fr-{task.id}"),
+            add_dirs=[wt_path, self.context.orchestra_dir],
+            extra_args=extra_args,
+        )
+        if extra_args and "--resume" in extra_args:
+            await asyncio.sleep(2)
+            rc = handle.process.returncode
+            if rc is not None and rc != 0:
+                log.warning(
+                    "Resume failed for %s (rc=%d), falling back to fresh session",
+                    task.id, rc,
+                )
+                await self._emit("fr_resume_fallback", {
+                    "task_id": task.id, "exit_code": rc,
+                })
+                # Drop the stale session id so future re-runs don't keep retrying.
+                await self.task_queue.set_fr_session_id(task.id, None)
+                # task.reject_reason is guaranteed non-None here: this branch is
+                # only reachable when use_resume=True, which requires it.
+                full_system = self._load_prompt(AgentRole.FEATURE_REALIZER, task.id)
+                full_task = (
+                    f"Implement feature {task.id}: {task.title}\n\n"
+                    f"The full spec is in the system prompt above. "
+                    f"Previously rejected: {task.reject_reason}"
+                )
+                handle = await self.spawner.spawn(
+                    role=AgentRole.FEATURE_REALIZER,
+                    system_prompt=full_system,
+                    task_prompt=full_task,
+                    cwd=wt_path,
+                    task_id=task.id,
+                    log_path=self.context.get_log_path(f"fr-{task.id}"),
+                    add_dirs=[wt_path, self.context.orchestra_dir],
+                )
+        return handle
+
+    async def _handle_fr_failure(self, task: Task, reason: str) -> None:
+        """Minimal stub. Extended in Phase 4 with sibling freeze + proposal pause."""
+        await self.task_queue.transition(
+            task.id, TaskStatus.FAILED, fail_reason=reason,
+        )
+        await self._emit("fr_failed", {"task_id": task.id, "reason": reason})
 
     # ── Feature Interpreter ─────────────────────────────────────────
 
