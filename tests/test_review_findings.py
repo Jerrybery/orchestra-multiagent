@@ -1,5 +1,4 @@
 import pytest
-import json
 from pathlib import Path
 from orchestra.core.task_queue import TaskQueue
 
@@ -33,7 +32,10 @@ async def test_add_and_get_latest_finding(tmp_path: Path):
     # Round 1 specifically
     earlier = await q.get_review_finding("t1", round=1)
     assert earlier["recommendation"] == "reject"
-    assert json.loads(earlier["critical"])[0]["desc"] == "null deref"
+    assert earlier["critical"][0]["desc"] == "null deref"
+
+    assert latest["critical"] == []
+    assert latest["important"] == []
     await q.close()
 
 
