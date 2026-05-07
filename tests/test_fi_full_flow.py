@@ -99,6 +99,108 @@ async def test_fi_runs_with_dev_server_and_records_findings(
 
 
 @pytest.mark.asyncio
+async def test_fi_ignores_dev_server_artifacts(
+    git_repo, orchestra_dir, tmp_path, fake_claude_env
+):
+    """Dev-server-generated files (node_modules/, .next/, etc.) written DURING
+    the FI window must not be mistaken for an FI worktree violation.
+
+    Strategy: configure the "dev server" command to (a) print the ready signal
+    so server.start() returns, then (b) sleep briefly and (c) create files
+    inside `node_modules/` and `.next/` — exactly the kind of HMR / build-cache
+    output a real Next.js or Vite server emits while running. FI itself does
+    nothing destructive (fake_claude exits clean). Expectation: status moves
+    to REVIEW, no `fi_violation_modified_worktree` event, no REJECTED.
+    """
+    orch, task, wt = await _build_fi_orchestrator(git_repo, orchestra_dir, tmp_path)
+    try:
+        # Override the dev_server command so it touches denylisted paths
+        # AFTER the ready signal — i.e. they will be in `current_status`
+        # but NOT in `baseline_status` (which is taken right after ready).
+        from orchestra.core.run_config import RunConfig
+        cfg = RunConfig(
+            command=(
+                'python -c "'
+                'import os, time, sys;'
+                "print('Ready in 0.1s', flush=True);"
+                "time.sleep(0.5);"
+                "os.makedirs('node_modules/foo', exist_ok=True);"
+                "open('node_modules/foo/cache.json','w').write('{}');"
+                "os.makedirs('.next', exist_ok=True);"
+                "open('.next/build-manifest.json','w').write('{}');"
+                "open('next-env.d.ts','w').write('// generated');"
+                "time.sleep(30)"
+                '"'
+            ),
+            ready_signal="Ready in",
+            base_url="http://localhost:9999",
+            startup_timeout=5,
+        )
+        await orch.context.save_run_config(cfg)
+
+        report_path = orch.context.get_report_path(task.id)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            "# Verification Report\n"
+            "## Critical (Must Fix)\n"
+            "## Important (Should Fix)\n"
+        )
+
+        fake_claude_env([
+            {"type": "system", "model": "sonnet", "session_id": "fi-art"},
+            {"type": "result",
+             "result": "ORCHESTRA_RESULT:{\"recommendation\":\"accept\",\"issues\":0}",
+             "is_error": False, "duration_ms": 50, "num_turns": 1},
+        ])
+
+        violation_events: list[dict] = []
+        original_emit = orch._emit
+
+        async def capturing_emit(event_type, payload):
+            if event_type == "fi_violation_modified_worktree":
+                violation_events.append(payload)
+            await original_emit(event_type, payload)
+
+        orch._emit = capturing_emit
+
+        # Race-window guard: the dev-server command sleeps 0.5s after ready
+        # before writing artifacts; the fake_claude script returns near-
+        # instantly, so without this wait `current_status` could be taken
+        # before the artifacts land. Make FI spawn block long enough that
+        # the artifacts are reliably present when current_status snapshots.
+        from orchestra.core.agent_spawner import AgentRole
+        import asyncio as _asyncio
+        real_spawn = orch.spawner.spawn
+
+        async def slow_spawn(*args, **kwargs):
+            handle = await real_spawn(*args, **kwargs)
+            if kwargs.get("role") == AgentRole.FEATURE_INTERPRETER:
+                await _asyncio.sleep(1.0)
+            return handle
+
+        orch.spawner.spawn = slow_spawn
+
+        await orch._run_fi(task)
+
+        refreshed = await orch.task_queue.get_task(task.id)
+        # Status must be REVIEW, not REJECTED — the dev artifacts must
+        # have been filtered out of the violation check.
+        assert refreshed.status == TaskStatus.REVIEW, (
+            f"expected REVIEW, got {refreshed.status} "
+            f"(reject_reason={refreshed.reject_reason!r})"
+        )
+        assert violation_events == [], (
+            f"expected no violation event, got {violation_events}"
+        )
+        # Sanity: confirm the artifacts were actually written (otherwise
+        # the test is degenerate and proves nothing).
+        assert (wt / "node_modules" / "foo" / "cache.json").exists()
+        assert (wt / ".next" / "build-manifest.json").exists()
+    finally:
+        await orch.close()
+
+
+@pytest.mark.asyncio
 async def test_fi_detects_worktree_violation_and_rejects(
     git_repo, orchestra_dir, tmp_path, fake_claude_env
 ):
