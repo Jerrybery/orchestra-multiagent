@@ -1269,12 +1269,83 @@ async function setupInit() {
     }
 
     const data = await res.json();
-    showDashboard(data.project_path);
+    // Stash project path so Step 3 → reload lands on the dashboard.
+    window._setupProjectPath = data.project_path;
+    setupShowStep3();
   } catch (e) {
     alert('Error: ' + e.message);
     btn.disabled = false;
     btn.textContent = 'Initialize Orchestra';
   }
+}
+
+// ── Setup Step 3: Run Configuration ─────────────────────────────
+
+async function setupShowStep3() {
+  document.getElementById('setup-step2').classList.add('hidden');
+  document.getElementById('setup-step3').classList.remove('hidden');
+  try {
+    const r = await fetch('/api/run_config/detect');
+    if (r.ok) {
+      const cfg = await r.json();
+      document.getElementById('rc-command').value = cfg.command;
+      document.getElementById('rc-ready-signal').value = cfg.ready_signal || '';
+      document.getElementById('rc-base-url').value = cfg.base_url;
+      document.getElementById('rc-timeout').value = cfg.startup_timeout;
+      const info = document.getElementById('rc-detect-info');
+      info.classList.remove('hidden');
+      document.getElementById('rc-detect-source').textContent = cfg.discovered_by;
+    }
+  } catch (e) { /* no detection */ }
+}
+
+async function runConfigTest() {
+  const body = _runConfigBody();
+  const result = document.getElementById('rc-test-result');
+  result.textContent = 'Testing...';
+  try {
+    const r = await fetch('/api/run_config/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (data.ok) {
+      result.innerHTML = '<span class="success">✓ Started successfully</span>';
+      document.getElementById('rc-save-btn').disabled = false;
+    } else {
+      result.innerHTML = `<span class="error">✗ ${esc(data.error || 'Test failed')}</span>`;
+    }
+  } catch (e) {
+    result.innerHTML = `<span class="error">✗ ${esc(e.message)}</span>`;
+  }
+}
+
+async function runConfigSave() {
+  const r = await fetch('/api/run_config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(_runConfigBody()),
+  });
+  if (r.ok) {
+    document.getElementById('setup-step3').classList.add('hidden');
+    document.getElementById('setup-screen').classList.add('hidden');
+    location.reload();
+  } else {
+    const result = document.getElementById('rc-test-result');
+    let msg = 'Save failed';
+    try { const data = await r.json(); msg = data.detail || msg; } catch (e) {}
+    result.innerHTML = `<span class="error">✗ ${esc(msg)}</span>`;
+  }
+}
+
+function _runConfigBody() {
+  return {
+    command: document.getElementById('rc-command').value,
+    ready_signal: document.getElementById('rc-ready-signal').value || null,
+    base_url: document.getElementById('rc-base-url').value,
+    startup_timeout: parseInt(document.getElementById('rc-timeout').value, 10),
+  };
 }
 
 function showDashboard(projectPath) {

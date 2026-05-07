@@ -8,13 +8,13 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Instrument+Serif&family=Inter+Tight:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<link rel="stylesheet" href="/static/style.css?v=3">
+<link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body>
 
 <!-- ── Setup Screen ───────────────────────────────────────── -->
 <div id="setup-screen" class="setup-screen hidden">
-  <div class="setup-card">
+  <div id="setup-step2" class="setup-card setup-step">
     <div class="setup-brand">
       <span class="brand-glyph">◎</span>
       <h1>Orchestra</h1>
@@ -46,6 +46,42 @@
     <button id="btn-setup-init" class="btn btn-primary btn-lg" onclick="setupInit()">
       Initialize Orchestra
     </button>
+  </div>
+
+  <div id="setup-step3" class="setup-card setup-step hidden">
+    <div class="setup-brand">
+      <span class="brand-glyph">◎</span>
+      <h1>Step 3: Run Configuration</h1>
+    </div>
+    <p class="setup-subtitle">FI verifies features by running your project. Tell Orchestra how:</p>
+
+    <div class="form-row">
+      <label>Run Command</label>
+      <input id="rc-command" type="text" placeholder="npm run dev" />
+    </div>
+    <div class="form-row">
+      <label>Ready Signal <span class="setup-muted">(optional)</span></label>
+      <input id="rc-ready-signal" type="text" placeholder="Ready in" />
+    </div>
+    <div class="form-row">
+      <label>Base URL</label>
+      <input id="rc-base-url" type="text" value="http://localhost:3000" />
+    </div>
+    <div class="form-row">
+      <label>Startup Timeout (s)</label>
+      <input id="rc-timeout" type="number" value="60" />
+    </div>
+
+    <div id="rc-detect-info" class="hint hidden">
+      ⓘ Detected from <span id="rc-detect-source"></span>. You can override.
+    </div>
+
+    <div class="actions">
+      <button class="btn" onclick="runConfigTest()">Test</button>
+      <button class="btn btn-primary" onclick="runConfigSave()" id="rc-save-btn" disabled>Save & Continue</button>
+    </div>
+
+    <div id="rc-test-result" class="rc-result"></div>
   </div>
 </div>
 
@@ -291,6 +327,6 @@
 
 </div><!-- /dashboard -->
 
-<script src="/static/app.js?v=3"></script>
+<script src="/static/app.js?v=4"></script>
 </body>
 </html>
