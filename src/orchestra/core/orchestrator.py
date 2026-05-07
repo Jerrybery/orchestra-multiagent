@@ -164,6 +164,22 @@ class Orchestrator:
         # Serializes FI runs: only one Feature Interpreter is active at a time
         # (the dev server it spawns binds the project port).
         self._fi_lock = asyncio.Lock()
+        # Strong references to fire-and-forget background tasks so they aren't
+        # garbage-collected mid-run, plus a done_callback to surface unhandled
+        # exceptions instead of letting them silently die.
+        self._background_tasks: set[asyncio.Task] = set()
+
+    def _track_background_task(self, t: asyncio.Task) -> None:
+        self._background_tasks.add(t)
+        t.add_done_callback(self._on_background_task_done)
+
+    def _on_background_task_done(self, t: asyncio.Task) -> None:
+        self._background_tasks.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc:
+            log.exception("Background task crashed", exc_info=exc)
 
     async def init(self) -> None:
         """Initialize all subsystems."""
@@ -744,9 +760,10 @@ class Orchestrator:
             extra_args=extra_args,
         )
         self._running_tasks[task.id] = handle
-
-        result = await self.spawner.wait(handle)
-        del self._running_tasks[task.id]
+        try:
+            result = await self.spawner.wait(handle)
+        finally:
+            self._running_tasks.pop(task.id, None)
 
         parsed = _parse_agent_result(result.stdout)
 
@@ -977,8 +994,10 @@ class Orchestrator:
                 add_dirs=[wt_path, self.context.orchestra_dir],
             )
             self._running_tasks[task.id] = handle
-            result = await self.spawner.wait(handle)
-            del self._running_tasks[task.id]
+            try:
+                result = await self.spawner.wait(handle)
+            finally:
+                self._running_tasks.pop(task.id, None)
             # Snapshot BEFORE server.stop() so dev-runtime artifacts written
             # while the server was up are still visible — _filter_dev_artifacts
             # below ignores the well-known ones, and any genuine FI mutation
@@ -1290,7 +1309,7 @@ class Orchestrator:
             if task.id in self._running_tasks:
                 continue
             log.info("Dispatching FR for %s (%s)", task.id, task.title)
-            asyncio.create_task(self._run_fr(task))
+            self._track_background_task(asyncio.create_task(self._run_fr(task)))
             fr_running += 1
 
         # 3. Assign IMPLEMENTED tasks to available FIs
@@ -1302,7 +1321,7 @@ class Orchestrator:
             if task.id in self._running_tasks:
                 continue
             log.info("Dispatching FI for %s (%s)", task.id, task.title)
-            asyncio.create_task(self._run_fi(task))
+            self._track_background_task(asyncio.create_task(self._run_fi(task)))
             fi_running += 1
 
     def stop(self) -> None:
