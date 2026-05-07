@@ -655,8 +655,9 @@ async function onNodeClick(node) {
 
   if (node.type === 'requirement') {
     titleEl.textContent = `Idea: ${node.id}`;
-    const pendingProps = graphData.proposals.filter(
-      p => p.requirement_id === node.id && p.status === 'pending'
+    const relatedProps = graphData.proposals.filter(
+      p => p.requirement_id === node.id &&
+           (p.status === 'pending' || p.status === 'paused')
     );
 
     let html = `
@@ -666,8 +667,8 @@ async function onNodeClick(node) {
       </div>
     `;
 
-    if (pendingProps.length) {
-      for (const prop of pendingProps) {
+    if (relatedProps.length) {
+      for (const prop of relatedProps) {
         html += await renderProposalReview(prop.id);
       }
     }
@@ -750,6 +751,16 @@ async function onNodeClick(node) {
     </div>`;
   }
 
+  if (task.status === 'failed') {
+    html += `<div class="detail-section">
+      <h3>Failure</h3>
+      <div class="fail-reason">${esc(task.fail_reason || '(no reason recorded)')}</div>
+      <div class="review-actions" style="margin-top:10px">
+        <button class="btn btn-retry" onclick="retryTask('${esc(task.id)}')">重试</button>
+      </div>
+    </div>`;
+  }
+
   if (task.status === 'review') {
     html += `<div class="detail-section">
       <h3>Accept Options</h3>
@@ -786,8 +797,12 @@ async function onNodeClick(node) {
 async function renderProposalReview(proposalId) {
   const prop = await fetchProposalDetail(proposalId);
 
+  const pausedBadge = prop.status === 'paused'
+    ? `<span class="badge-paused">已暂停</span>`
+    : '';
+
   let html = `<div class="detail-section proposal-review">
-    <h3>Proposal Review: ${proposalId}</h3>
+    <h3>Proposal Review: ${esc(proposalId)} ${pausedBadge}</h3>
     <p style="color:var(--text-dim);margin-bottom:12px">
       Head Leader produced ${prop.features.length} features. Review and approve/reject before they enter the pipeline.
     </p>
@@ -888,6 +903,24 @@ async function pushTaskBranch(taskId) {
     await fetchGraph();
   } catch (e) {
     addLogEntry('push_branch', 'Error: ' + e.message);
+  }
+}
+
+async function retryTask(taskId) {
+  addLogEntry('task_retry', `Retrying ${taskId}…`);
+  try {
+    const r = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/retry`, { method: 'POST' });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      alert(err.detail || 'Retry failed');
+      return;
+    }
+    addLogEntry('task_retry', `${taskId} re-queued`);
+    await fetchGraph();
+    const node = graphData.nodes.find(n => n.id === taskId);
+    if (node) onNodeClick(node);
+  } catch (e) {
+    addLogEntry('task_retry', 'Error: ' + e.message);
   }
 }
 

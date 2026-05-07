@@ -12,6 +12,7 @@ from httpx import AsyncClient, ASGITransport
 import orchestra.web.api as web_api
 from orchestra.web.api import app, set_orchestrator
 from orchestra.core.run_config import RunConfig
+from orchestra.core.task_queue import TaskStatus
 
 
 @pytest_asyncio.fixture
@@ -193,3 +194,51 @@ async def test_test_run_config_failure_reports_error(web_client_orch, orchestrat
     assert saved is not None
     assert saved.last_test_ok is False
     assert saved.last_test_at is not None
+
+
+# ── POST /api/tasks/{task_id}/retry (Task 4.3) ──────────────────────
+
+@pytest.mark.asyncio
+async def test_retry_endpoint_400_for_non_failed_task(web_client_orch, orchestrator):
+    """Endpoint should reject retries on tasks that are not in FAILED state."""
+    await orchestrator.task_queue.add_requirement("r1", "x")
+    await orchestrator.task_queue.add_proposal(
+        "p1", "r1", features=[{"id": "ta", "title": "A"}]
+    )
+    await orchestrator.task_queue.add_task(
+        "ta", title="A", priority=0, depends_on=[], requirement_id="r1"
+    )
+    # Task is in IDEA (not FAILED) — retry should 400
+    resp = await web_client_orch.post("/api/tasks/ta/retry")
+    assert resp.status_code == 400
+    assert "FAILED" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_retry_endpoint_succeeds_on_failed_task(web_client_orch, orchestrator):
+    """Endpoint should move a FAILED task back to ASSIGNED and clear fail_reason."""
+    await orchestrator.task_queue.add_requirement("r1", "x")
+    await orchestrator.task_queue.add_proposal(
+        "p1", "r1", features=[{"id": "ta", "title": "A"}]
+    )
+    await orchestrator.task_queue.add_task(
+        "ta", title="A", priority=0, depends_on=[], requirement_id="r1"
+    )
+    # Force into FAILED state so retry is permitted
+    await orchestrator.task_queue.transition(
+        "ta", TaskStatus.FAILED, fail_reason="boom"
+    )
+
+    resp = await web_client_orch.post("/api/tasks/ta/retry")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "retrying"}
+
+    t = await orchestrator.task_queue.get_task("ta")
+    assert t.status == TaskStatus.ASSIGNED
+    assert t.fail_reason is None
+
+
+@pytest.mark.asyncio
+async def test_retry_endpoint_503_when_orch_missing(web_client_no_orch):
+    resp = await web_client_no_orch.post("/api/tasks/whatever/retry")
+    assert resp.status_code == 503
