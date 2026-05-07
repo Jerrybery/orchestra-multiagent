@@ -21,7 +21,9 @@ def main() -> int:
         if a == "--resume" and i + 1 < len(args):
             resume_id = args[i + 1]
     expected_resume = os.environ.get("FAKE_CLAUDE_RESUME_ID")
-    if expected_resume and resume_id != expected_resume:
+    # Only fail when --resume is explicitly passed AND doesn't match expected.
+    # Missing --resume = no enforcement (lets fallback paths spawn fresh sessions).
+    if resume_id is not None and expected_resume and resume_id != expected_resume:
         sys.stderr.write(
             f"Session resume mismatch: expected {expected_resume!r}, got {resume_id!r}\n"
         )
