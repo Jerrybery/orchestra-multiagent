@@ -410,8 +410,8 @@ async def get_graph():
             edges.append({"from": dep, "to": task.id, "type": "dependency"})
 
     # Include pending proposals as dashed/preview nodes
-    proposals = await orch.task_queue.get_proposals(status="pending")
-    for prop in proposals:
+    pending_proposals = await orch.task_queue.get_proposals(status="pending")
+    for prop in pending_proposals:
         for feat in prop.features:
             nodes.append({
                 "id": feat["id"],
@@ -426,18 +426,23 @@ async def get_graph():
             for dep in feat.get("depends_on", []):
                 edges.append({"from": dep, "to": feat["id"], "type": "proposal_dep"})
 
+    # Also surface paused proposals so the UI can show the "已暂停" badge.
+    paused_proposals = await orch.task_queue.get_proposals(status="paused")
+
     # Include repo branches (non-feat/ branches)
     branches = await orch.worktree.list_branches()
 
     # Git commit log for the graph
     commits = await orch.worktree.get_log_graph(max_count=80)
 
+    proposals_payload = [
+        {"id": p.id, "requirement_id": p.requirement_id, "summary": p.summary,
+         "status": p.status, "features": p.features, "created_at": p.created_at}
+        for p in (pending_proposals + paused_proposals)
+    ]
+
     return {"nodes": nodes, "edges": edges, "branches": branches, "commits": commits,
-            "proposals": [
-                {"id": p.id, "requirement_id": p.requirement_id, "summary": p.summary,
-                 "status": p.status, "features": p.features, "created_at": p.created_at}
-                for p in proposals
-            ]}
+            "proposals": proposals_payload}
 
 
 class IssueIdeaRequest(BaseModel):
@@ -588,6 +593,7 @@ async def get_task(task_id: str):
         "requirement": req,
         "assigned_to": t.assigned_to, "branch": t.branch,
         "reject_reason": t.reject_reason,
+        "fail_reason": t.fail_reason,
         "source_issue": t.source_issue,
         "spec": spec,
         "report": report,
@@ -701,6 +707,18 @@ async def merge_task_branch(task_id: str):
     if merged:
         pushed = await orch.worktree.push_main()
     return {"merged": merged, "pushed": pushed, "message": msg}
+
+
+@app.post("/api/tasks/{task_id}/retry")
+async def retry_task_endpoint(task_id: str):
+    """Retry a FAILED task: move back to ASSIGNED, clear fail_reason,
+    auto-unpause parent proposal once no FAILED siblings remain."""
+    orch = _orch()
+    try:
+        await orch.retry_failed_task(task_id)
+        return {"status": "retrying"}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/api/git/push-main")
