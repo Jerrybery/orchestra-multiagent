@@ -462,6 +462,7 @@ class TaskQueue:
         important: list[dict],
         report_path: str,
     ) -> None:
+        """Insert a finding row. `critical` and `important` are JSON-encoded on write."""
         await self._db.execute(
             """INSERT INTO review_findings
                (task_id, round, recommendation, critical, important, report_path, created_at)
@@ -473,20 +474,32 @@ class TaskQueue:
         await self._db.commit()
 
     async def get_latest_review_finding(self, task_id: str) -> Optional[dict]:
+        """Returns latest finding row with `critical` and `important` JSON-decoded to lists."""
         async with self._db.execute(
             "SELECT * FROM review_findings WHERE task_id = ? ORDER BY round DESC LIMIT 1",
             (task_id,),
         ) as cur:
             row = await cur.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            d = dict(row)
+            d["critical"] = json.loads(d["critical"]) if d["critical"] else []
+            d["important"] = json.loads(d["important"]) if d["important"] else []
+            return d
 
     async def get_review_finding(self, task_id: str, round: int) -> Optional[dict]:
+        """Returns specific round's finding row with `critical` and `important` JSON-decoded."""
         async with self._db.execute(
             "SELECT * FROM review_findings WHERE task_id = ? AND round = ?",
             (task_id, round),
         ) as cur:
             row = await cur.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            d = dict(row)
+            d["critical"] = json.loads(d["critical"]) if d["critical"] else []
+            d["important"] = json.loads(d["important"]) if d["important"] else []
+            return d
 
     async def get_tasks_for_proposal(self, proposal_id: str) -> list[Task]:
         """Return all materialized tasks for the features in a proposal.
