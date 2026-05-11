@@ -79,3 +79,24 @@ async def test_finish_agent_run_empty_snapshot_roundtrips(tmp_path):
     await q.finish_agent_run(run.id, status="cancelled", result_snapshot={})
     fetched = await q.get_agent_run(run.id)
     assert fetched.result_snapshot == {}
+
+
+@pytest.mark.asyncio
+async def test_migrate_is_idempotent(tmp_path):
+    q = TaskQueue(tmp_path / "t.db")
+    await q.init()
+    await q.close()
+    # re-init twice — _migrate must be idempotent
+    q2 = TaskQueue(tmp_path / "t.db")
+    await q2.init()
+    # verify new fields exist
+    async with q2._db.execute("PRAGMA table_info(tasks)") as cur:
+        cols = {r["name"] async for r in cur}
+    assert "spec" in cols
+    async with q2._db.execute("PRAGMA table_info(requirements)") as cur:
+        cols = {r["name"] async for r in cur}
+    assert "status" in cols
+    async with q2._db.execute("PRAGMA table_info(review_findings)") as cur:
+        cols = {r["name"] async for r in cur}
+    assert "run_id" in cols
+    await q2.close()
