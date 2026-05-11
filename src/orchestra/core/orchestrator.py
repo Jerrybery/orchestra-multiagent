@@ -126,6 +126,8 @@ class OrchestraConfig:
     model: str = "sonnet"
     auto_accept: bool = False
     tracked_branch: Optional[str] = None  # auto-checkout to latest on startup
+    auto_create_issues: bool = False  # default: do NOT auto-touch GitHub on
+    # submit_requirement / approve_proposal. UI/API can override per-call.
 
 
 class Orchestrator:
@@ -634,11 +636,17 @@ class Orchestrator:
         m = _re.match(r'\[From Discussion Tree #(\d+):', requirement)
         return int(m.group(1)) if m else None
 
-    async def submit_requirement(self, requirement: str) -> str:
+    async def submit_requirement(
+        self, requirement: str, create_issue: Optional[bool] = None,
+    ) -> str:
         """Create a requirement and trigger an auto HL run via AgentRunManager.
 
         Returns the requirement_id. The proposal will be created
         asynchronously by _on_hl_done when HL succeeds.
+
+        ``create_issue`` opts into creating a GitHub idea issue for the new
+        requirement when no source issue is embedded. ``None`` (the default)
+        falls back to ``config.auto_create_issues``.
         """
         import hashlib
         import time as _time
@@ -648,8 +656,12 @@ class Orchestrator:
 
         source_issue = self._extract_source_issue(requirement)
         title = self._extract_title(requirement)
+        effective_create_issue = (
+            create_issue if create_issue is not None
+            else self.config.auto_create_issues
+        )
         idea_issue_num = source_issue or 0
-        if not source_issue:
+        if not source_issue and effective_create_issue:
             idea_issue = await self.github.create_idea_issue(
                 title=title,
                 body=f"## Idea\n\n{requirement}\n\n---\n*Created by Orchestra*",
@@ -666,9 +678,18 @@ class Orchestrator:
         )
         return req_id
 
-    async def approve_proposal(self, proposal_id: str,
-                               approved_feature_ids: list[str] | None = None) -> list[Task]:
-        """Human approves a proposal (or a subset of its features) → creates IDEA tasks."""
+    async def approve_proposal(
+        self, proposal_id: str,
+        approved_feature_ids: list[str] | None = None,
+        create_issues: Optional[bool] = None,
+    ) -> list[Task]:
+        """Human approves a proposal (or a subset of its features) → creates IDEA tasks.
+
+        ``create_issues`` opts into creating per-feature GitHub feat issues
+        under the idea issue. ``None`` (the default) falls back to
+        ``config.auto_create_issues``. Feat issues are only created when an
+        idea issue exists.
+        """
         proposal = await self.task_queue.get_proposal(proposal_id)
         if not proposal:
             raise ValueError(f"Proposal {proposal_id} not found")
@@ -676,6 +697,11 @@ class Orchestrator:
         features = proposal.features
         if approved_feature_ids is not None:
             features = [f for f in features if f["id"] in approved_feature_ids]
+
+        effective_create_issues = (
+            create_issues if create_issues is not None
+            else self.config.auto_create_issues
+        )
 
         tasks = []
         idea_issue_num = features[0].get("_idea_issue", 0) if features else 0
@@ -694,8 +720,9 @@ class Orchestrator:
                 self.context.write_spec(feat["id"], full_spec)
 
             # Create GitHub issue for this feature, linked to the idea issue
+            # (only when caller / config opts in, and an idea issue exists).
             feat_issue_num = 0
-            if idea_issue_num:
+            if idea_issue_num and effective_create_issues:
                 feat_issue = await self.github.create_feat_issue(
                     title=f"{feat['id']}: {feat['title']}",
                     body=self.context.read_spec(feat["id"]) or "",
@@ -782,14 +809,16 @@ class Orchestrator:
 
     # ── Human Review Actions ────────────────────────────────────────
 
-    async def accept_task(self, task_id: str, push: bool = True,
-                          create_pr: bool = True,
+    async def accept_task(self, task_id: str, push: bool = False,
+                          create_pr: bool = False,
                           merge_local: bool = True) -> dict:
-        """Human accepts a task. Returns a result dict.
+        """Human accepts a task. Defaults: local merge only — push/PR is opt-in.
 
-        merge_local → merge feature branch into main locally (default on)
-        push        → push branch (and merged main) to remote
-        create_pr   → create GitHub PR (requires push)
+        merge_local → merge feature branch into main locally (default on so
+                      the user sees the latest code locally)
+        push        → push branch (and merged main) to remote (opt-in)
+        create_pr   → create GitHub PR; requires push and only fires when
+                      the branch was NOT merged locally (opt-in)
         """
         await self.task_queue.transition(task_id, TaskStatus.ACCEPTED)
 
