@@ -169,6 +169,55 @@ class Orchestrator:
         # exceptions instead of letting them silently die.
         self._background_tasks: set[asyncio.Task] = set()
 
+        # NEW (Task 3.3): wire up runners + manager + auto driver
+        from orchestra.core.runners.hl import HLRunner
+        from orchestra.core.runners.fr import FRRunner
+        from orchestra.core.runners.fi import FIRunner
+        from orchestra.core.agent_run_manager import AgentRunManager, AutoDriver
+
+        hl_runner = HLRunner(
+            self.spawner,
+            requirement_loader=self._load_requirement_text,
+            prompt_loader=lambda: self._load_prompt(AgentRole.HEAD_LEADER),
+        )
+        fr_runner = FRRunner(
+            self.spawner, self.worktree,
+            task_loader=self.task_queue.get_task,
+            prompt_loader=lambda tid: self._load_prompt(
+                AgentRole.FEATURE_REALIZER, tid),
+            head_fn=_git_rev_parse_head,
+            files_changed_fn=self._git_files_changed,
+        )
+        from orchestra.core.dev_server import DevServer
+        fi_runner = FIRunner(
+            self.spawner,
+            task_loader=self.task_queue.get_task,
+            prompt_loader=lambda tid: self._load_prompt(
+                AgentRole.FEATURE_INTERPRETER, tid),
+            run_config_loader=self.context.get_run_config,
+            dev_server_factory=DevServer,
+            worktree_path_fn=self.context.get_worktree_path,
+            dev_log_path_fn=self.context.get_dev_server_log_path,
+            head_fn=_git_rev_parse_head,
+            status_fn=_git_status_porcelain,
+            reset_fn=_git_reset_to,
+            report_parser=self._parse_findings_from_report,
+        )
+        self.manager = AgentRunManager(
+            task_queue=self.task_queue,
+            runners={"hl": hl_runner, "fr": fr_runner, "fi": fi_runner},
+            context={"project_dir": config.project_dir,
+                     "orchestra_dir": config.orchestra_dir},
+            log_path_fn=lambda role, tid: str(
+                self.context.get_log_path(f"{role}-{tid}")),
+            emit=self._emit,
+            hl_done_hook=self._on_hl_done,
+            fr_failed_hook=self._on_fr_failed_cascade,
+        )
+        self.auto_driver = AutoDriver(
+            task_queue=self.task_queue, manager=self.manager, config=config,
+        )
+
     def _track_background_task(self, t: asyncio.Task) -> None:
         self._background_tasks.add(t)
         t.add_done_callback(self._on_background_task_done)
@@ -277,6 +326,64 @@ class Orchestrator:
         await self.task_queue.add_event(event, data)
         if self._on_event:
             await self._on_event(event, data)
+
+    # ── Helpers used by Runners/Manager/AutoDriver (Task 3.3) ───────
+
+    async def _load_requirement_text(self, req_id: str) -> str:
+        req = await self.task_queue.get_requirement(req_id)
+        return req.content if req else ""
+
+    async def _git_files_changed(self, cwd, base_branch) -> list:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "diff", "--name-only", f"{base_branch}..HEAD",
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        return [l for l in out.decode().splitlines() if l]
+
+    async def _on_hl_done(self, requirement_id: str, snapshot: dict) -> None:
+        """Hook called when an HL run succeeds (auto OR manual) — mint a proposal."""
+        import hashlib, time as _time
+        unique = f"{requirement_id}:{_time.time()}"
+        proposal_id = "prop-" + hashlib.sha256(unique.encode()).hexdigest()[:8]
+        features = snapshot.get("features", [])
+        for f in features:
+            f.setdefault("_idea_issue", 0)
+        await self.task_queue.add_proposal(
+            proposal_id, requirement_id, features,
+            summary=snapshot.get("summary", ""),
+        )
+        await self._emit("hl_done", {
+            "proposal_id": proposal_id,
+            "count": len(features),
+            "features": [f["id"] for f in features],
+        })
+
+    async def _on_fr_failed_cascade(self, task_id: str, run_id: int,
+                                    reason: str) -> None:
+        """FR auto-failure cascade: freeze siblings + pause proposal."""
+        await self.task_queue.transition(
+            task_id, TaskStatus.FAILED, fail_reason=reason,
+        )
+        proposal_id = await self._proposal_id_for_task(task_id)
+        if not proposal_id:
+            return
+        siblings = await self.task_queue.get_tasks_for_proposal(proposal_id)
+        for s in siblings:
+            if s.id != task_id and s.status in {TaskStatus.IDEA, TaskStatus.ASSIGNED}:
+                await self.task_queue.add_auto_pause(
+                    "task", s.id, caused_by_run_id=run_id,
+                    reason=f"Cancelled: sibling {task_id} failed",
+                )
+        await self.task_queue.add_auto_pause(
+            "proposal", proposal_id, caused_by_run_id=run_id,
+            reason=f"sibling {task_id} failed",
+        )
+        await self._emit("proposal_paused", {
+            "proposal_id": proposal_id, "failed_task": task_id, "reason": reason,
+        })
 
     # ── Discussion Tracking ──────────────────────────────────────────
 
