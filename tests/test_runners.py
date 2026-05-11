@@ -35,3 +35,45 @@ async def test_hl_runner_success(tmp_path):
     assert result.result_snapshot["summary"] == "x"
     assert len(result.result_snapshot["features"]) == 1
     assert result.session_id == "sess-1"
+
+
+from orchestra.core.runners.fr import FRRunner
+
+
+@pytest.mark.asyncio
+async def test_fr_runner_success(tmp_path, monkeypatch):
+    spawner = MagicMock()
+    handle = MagicMock(); handle.process.returncode = 0
+    spawner.spawn = AsyncMock(return_value=handle)
+    res = MagicMock()
+    res.stdout = 'ORCHESTRA_RESULT:{"status":"success","notes":"impl done"}\n'
+    res.stderr = ""; res.exit_code = 0; res.session_id = "sess-fr"
+    spawner.wait = AsyncMock(return_value=res)
+
+    # Mock worktree manager + git helpers
+    wt_mgr = MagicMock()
+    wt_mgr.create_worktree = AsyncMock(return_value=tmp_path / "wt")
+    wt_mgr.get_branch_name = MagicMock(return_value="feat/feat-001")
+    (tmp_path / "wt").mkdir()
+    async def fake_head(cwd): return "abc123"
+    async def fake_files(cwd, base): return ["a.py", "b.py"]
+    runner = FRRunner(
+        spawner=spawner, worktree_mgr=wt_mgr,
+        task_loader=AsyncMock(return_value=MagicMock(
+            id="feat-001", title="demo", spec="s",
+            source_issue=None, reject_reason=None,
+        )),
+        prompt_loader=lambda task_id: "PROMPT",
+        head_fn=fake_head, files_changed_fn=fake_files,
+    )
+    ctx = RunContext(
+        role="fr", target_kind="task", target_id="feat-001",
+        mode="manual", resume_session_id=None, prev_run=None,
+        project_dir=tmp_path, orchestra_dir=tmp_path / ".o",
+        log_path=str(tmp_path / "fr.log"),
+    )
+    result = await runner.run(ctx, CancelToken())
+    assert result.status == "succeeded"
+    assert result.result_snapshot["head_commit"] == "abc123"
+    assert result.result_snapshot["files_changed"] == ["a.py", "b.py"]
+    assert result.result_snapshot["branch"] == "feat/feat-001"
