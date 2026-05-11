@@ -46,6 +46,12 @@ async def test_retry_rejects_non_failed_task(orchestrator):
 
 @pytest.mark.asyncio
 async def test_retry_unpauses_proposal_when_no_failed_left(orchestrator):
+    """When the last FAILED sibling is retried, the proposal is auto-unpaused.
+
+    Setup mirrors the cascade outcome: ta in FAILED, tb in FAILED,
+    proposal status = paused (legacy state — `retry_failed_task` still
+    flips that status back to approved when no FAILED siblings remain).
+    """
     await orchestrator.task_queue.add_requirement("r1", "x")
     await orchestrator.task_queue.add_proposal(
         "p1", "r1",
@@ -56,11 +62,14 @@ async def test_retry_unpauses_proposal_when_no_failed_left(orchestrator):
             fid, title="x", priority=0, depends_on=[], requirement_id="r1"
         )
     await orchestrator.task_queue.update_proposal_status("p1", "approved")
-    # Trigger cascade: ta IN_PROGRESS → fail → tb (IDEA) cascade-fails, proposal pauses
-    await orchestrator.task_queue.transition("ta", TaskStatus.ASSIGNED)
-    await orchestrator.task_queue.transition("ta", TaskStatus.IN_PROGRESS)
-    ta = await orchestrator.task_queue.get_task("ta")
-    await orchestrator._handle_fr_failure(ta, reason="x")
+    # Simulate the cascade outcome directly: both tasks FAILED, proposal paused.
+    for fid in ("ta", "tb"):
+        await orchestrator.task_queue.transition(fid, TaskStatus.ASSIGNED)
+        await orchestrator.task_queue.transition(fid, TaskStatus.IN_PROGRESS)
+        await orchestrator.task_queue.transition(
+            fid, TaskStatus.FAILED, fail_reason="x"
+        )
+    await orchestrator.task_queue.update_proposal_status("p1", "paused")
 
     # Retry tb first — proposal still paused (ta still FAILED)
     await orchestrator.retry_failed_task("tb")

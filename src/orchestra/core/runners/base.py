@@ -83,9 +83,12 @@ class AgentRunner(ABC):
         Returns (handle, fell_back). The 2s probe is the same race window
         used by the original _spawn_fr_with_resume_fallback.
         """
+        # ctx.log_path is a str (the Manager stores it that way for the
+        # agent_runs row); AgentSpawner needs a Path so it can .parent.mkdir.
+        log_path_p = Path(log_path) if isinstance(log_path, str) else log_path
         handle = await self.spawner.spawn(
             role=role, system_prompt=resume_system, task_prompt=resume_task,
-            cwd=cwd, task_id=task_id, log_path=log_path,
+            cwd=cwd, task_id=task_id, log_path=log_path_p,
             add_dirs=add_dirs, extra_args=resume_args,
         )
         if resume_args and "--resume" in resume_args:
@@ -106,7 +109,7 @@ class AgentRunner(ABC):
                 handle = await self.spawner.spawn(
                     role=role, system_prompt=fresh_system,
                     task_prompt=fresh_task, cwd=cwd, task_id=task_id,
-                    log_path=log_path, add_dirs=add_dirs,
+                    log_path=log_path_p, add_dirs=add_dirs,
                 )
                 return handle, True
         return handle, False
