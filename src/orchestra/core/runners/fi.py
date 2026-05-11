@@ -58,6 +58,14 @@ class FIRunner(AgentRunner):
         self._parse_report = report_parser
 
     async def run(self, ctx: RunContext, cancel: CancelToken) -> RunResult:
+        try:
+            return await self._run_inner(ctx, cancel)
+        except Exception as e:
+            log.exception("FIRunner crashed")
+            return RunResult(status="failed", session_id=None,
+                             result_snapshot={}, error_message=str(e))
+
+    async def _run_inner(self, ctx: RunContext, cancel: CancelToken) -> RunResult:
         task = await self._load_task(ctx.target_id)
         wt_path = self._wt_path(task.id)
 
