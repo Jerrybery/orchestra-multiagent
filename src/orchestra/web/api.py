@@ -62,13 +62,16 @@ def _is_initialized() -> bool:
 
 class SubmitRequest(BaseModel):
     requirement: str
+    # Opt-in to creating a GitHub idea issue when no source issue is embedded.
+    # None → fall back to OrchestraConfig.auto_create_issues.
+    create_issue: Optional[bool] = None
 
 
 class ReviewAction(BaseModel):
     action: str  # "accept" | "reject" | "rename_branch"
     reason: str = ""
     merge_local: bool = True   # for accept: merge into main locally
-    push: bool = True          # for accept: push to remote
+    push: bool = False         # for accept: push to remote (opt-in)
     create_pr: bool = False    # for accept: create PR (only if NOT merge_local)
     new_branch: str = ""       # for rename_branch
 
@@ -76,6 +79,13 @@ class ReviewAction(BaseModel):
 class ProposalAction(BaseModel):
     action: str  # "approve" or "reject"
     feature_ids: list[str] | None = None  # approve subset, or None = all
+    # Opt-in to creating per-feature GitHub feat issues under the idea issue.
+    # None → fall back to OrchestraConfig.auto_create_issues.
+    create_issues: Optional[bool] = None
+
+
+class OrchestraConfigUpdate(BaseModel):
+    auto_create_issues: Optional[bool] = None
 
 
 class InitRequest(BaseModel):
@@ -147,6 +157,28 @@ async def toggle_auto_accept():
     state = orch.config.auto_accept
     await orch._emit("auto_accept_toggled", {"enabled": state})
     return {"auto_accept": state}
+
+
+@app.get("/api/orchestra-config")
+async def get_orchestra_config():
+    """Return user-tweakable defaults the UI mirrors (e.g. auto_create_issues)."""
+    orch = _orch()
+    return {
+        "auto_create_issues": orch.config.auto_create_issues,
+        "auto_accept": orch.config.auto_accept,
+    }
+
+
+@app.put("/api/orchestra-config")
+async def update_orchestra_config(req: OrchestraConfigUpdate):
+    """Update a subset of OrchestraConfig fields. Only listed fields are written."""
+    orch = _orch()
+    if req.auto_create_issues is not None:
+        orch.config.auto_create_issues = req.auto_create_issues
+    return {
+        "auto_create_issues": orch.config.auto_create_issues,
+        "auto_accept": orch.config.auto_accept,
+    }
 
 
 @app.post("/api/disconnect")
@@ -447,11 +479,19 @@ async def get_graph():
 
 class IssueIdeaRequest(BaseModel):
     instruction: str = ""
+    # No-op for this endpoint (the source issue already exists), but accepted
+    # for symmetry with /api/submit so callers can pass the same payload shape.
+    create_issue: Optional[bool] = None
 
 
 @app.post("/api/issues/{issue_number}/idea")
 async def submit_issue_idea(issue_number: int, req: IssueIdeaRequest):
-    """Submit any GitHub issue as an idea to Head Leader."""
+    """Submit any GitHub issue as an idea to Head Leader.
+
+    Note: ``create_issue`` is accepted but unused — the issue already exists,
+    so there is nothing to create. submit_requirement will detect the embedded
+    ``[From Discussion Tree #N: ...]`` tag and skip idea-issue creation.
+    """
     orch = _orch()
     try:
         proposal_id = await orch.submit_issue_as_idea(
@@ -539,7 +579,10 @@ async def review_proposal(proposal_id: str, action: ProposalAction):
         raise HTTPException(400, f"Proposal is already {p.status}")
 
     if action.action == "approve":
-        tasks = await orch.approve_proposal(proposal_id, action.feature_ids)
+        tasks = await orch.approve_proposal(
+            proposal_id, action.feature_ids,
+            create_issues=action.create_issues,
+        )
         return {"status": "approved", "tasks_created": len(tasks),
                 "task_ids": [t.id for t in tasks]}
     elif action.action == "reject":
@@ -647,7 +690,9 @@ async def get_summary():
 async def submit_requirement(req: SubmitRequest):
     orch = _orch()
     # Run in background so the HTTP response returns immediately
-    asyncio.create_task(orch.submit_requirement(req.requirement))
+    asyncio.create_task(
+        orch.submit_requirement(req.requirement, create_issue=req.create_issue)
+    )
     return {"status": "submitted", "message": "Head Leader is processing..."}
 
 

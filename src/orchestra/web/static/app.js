@@ -815,12 +815,12 @@ async function onNodeClick(node) {
         合并到本地主分支
       </label>
       <label class="checkbox-label" style="font-size:12.5px;margin-bottom:6px">
-        <input type="checkbox" id="accept-push-${task.id}" checked>
-        推送到远程
+        <input type="checkbox" id="accept-push-${task.id}">
+        推送到远程（默认不推送）
       </label>
       <label class="checkbox-label" style="font-size:12.5px;margin-bottom:10px">
         <input type="checkbox" id="accept-pr-${task.id}">
-        创建 PR（不合并时使用）
+        创建 PR（不合并时使用，默认关闭）
       </label>
       <div class="review-actions">
         <button class="btn btn-primary" onclick="reviewTaskAccept('${task.id}')">Accept</button>
@@ -889,6 +889,10 @@ async function renderProposalReview(proposalId) {
   }
 
   html += `</div>
+    <label class="checkbox-label" style="font-size:12.5px;margin-top:10px;display:block">
+      <input type="checkbox" id="approve-create-issues-${proposalId}" ${autoCreateIssues ? 'checked' : ''}>
+      Create feat issues under idea
+    </label>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button class="btn btn-primary" onclick="approveProposal('${proposalId}')">Approve Selected</button>
       <button class="btn" onclick="requestResplit('${proposalId}')">Request Re-split</button>
@@ -908,12 +912,22 @@ async function approveProposal(proposalId) {
   const featureIds = [];
   checkboxes.forEach(cb => { if (cb.checked) featureIds.push(cb.dataset.featId); });
 
+  const createIssuesCb = document.getElementById(`approve-create-issues-${proposalId}`);
+  const createIssues = createIssuesCb ? createIssuesCb.checked : autoCreateIssues;
+
   await fetch(`/api/proposals/${proposalId}/review`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'approve', feature_ids: featureIds }),
+    body: JSON.stringify({
+      action: 'approve',
+      feature_ids: featureIds,
+      create_issues: createIssues,
+    }),
   });
-  addLogEntry('proposal_approved', `Approved ${featureIds.length} features from ${proposalId}`);
+  addLogEntry(
+    'proposal_approved',
+    `Approved ${featureIds.length} features from ${proposalId}${createIssues ? ' (+GitHub feat issues)' : ''}`
+  );
   await fetchGraph();
 }
 
@@ -1166,6 +1180,52 @@ function updateAutoAcceptBtn(enabled) {
   value.textContent = enabled ? 'on' : 'off';
 }
 
+// ── Auto-create-issues toggle (overflow menu) ────────────────
+// Mirrors OrchestraConfig.auto_create_issues. This is the *default* for the
+// per-action "Create GitHub issue" checkboxes — each action surface still
+// gets a per-call checkbox.
+let autoCreateIssues = false;
+
+function updateAutoCreateIssuesMenu(enabled) {
+  autoCreateIssues = !!enabled;
+  const el = document.getElementById('menu-auto-create-issues-value');
+  if (el) el.textContent = enabled ? 'on' : 'off';
+}
+
+async function fetchOrchestraConfig() {
+  try {
+    const res = await fetch('/api/orchestra-config');
+    if (!res.ok) return;
+    const data = await res.json();
+    updateAutoCreateIssuesMenu(data.auto_create_issues);
+  } catch (e) {
+    // Best-effort — leave default off.
+  }
+}
+
+(function wireAutoCreateIssuesMenu() {
+  const btn = document.getElementById('menu-auto-create-issues');
+  if (!btn) return;
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    try {
+      const res = await fetch('/api/orchestra-config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auto_create_issues: !autoCreateIssues }),
+      });
+      const data = await res.json();
+      updateAutoCreateIssuesMenu(data.auto_create_issues);
+      addLogEntry(
+        'orchestra_config',
+        `Auto-create GitHub issues: ${data.auto_create_issues ? 'on' : 'off'}`
+      );
+    } catch (err) {
+      addLogEntry('orchestra_config', 'Failed to toggle: ' + err.message);
+    }
+  });
+})();
+
 // ── Switch project ──────────────────────────────────────────────
 
 async function doSwitchProject() {
@@ -1180,6 +1240,9 @@ async function doSwitchProject() {
 
 document.getElementById('btn-submit').addEventListener('click', () => {
   document.getElementById('modal-overlay').classList.remove('hidden');
+  // Reset the create-issue checkbox to mirror the current global default
+  // each time the modal opens, so the user sees the active policy.
+  document.getElementById('submit-create-issue').checked = autoCreateIssues;
   document.getElementById('input-requirement').focus();
 });
 
@@ -1191,15 +1254,17 @@ document.getElementById('btn-do-submit').addEventListener('click', async () => {
   const text = document.getElementById('input-requirement').value.trim();
   if (!text) return;
 
+  const createIssue = document.getElementById('submit-create-issue').checked;
+
   await fetch('/api/submit', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ requirement: text }),
+    body: JSON.stringify({ requirement: text, create_issue: createIssue }),
   });
 
   document.getElementById('modal-overlay').classList.add('hidden');
   document.getElementById('input-requirement').value = '';
-  addLogEntry('submit', 'Requirement submitted to Head Leader');
+  addLogEntry('submit', `Requirement submitted to Head Leader${createIssue ? ' (+GitHub idea issue)' : ''}`);
 });
 
 // ── Log tabs ────────────────────────────────────────────────────
@@ -2957,6 +3022,8 @@ document.getElementById('menu-switch').addEventListener('click', () => {
     if (data.initialized) {
       showDashboard(data.project_path);
       if (data.auto_accept) updateAutoAcceptBtn(true);
+      // Mirror server-side OrchestraConfig defaults into the UI.
+      await fetchOrchestraConfig();
     } else {
       document.getElementById('setup-screen').classList.remove('hidden');
       setupBrowse('~');

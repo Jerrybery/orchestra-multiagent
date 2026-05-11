@@ -148,6 +148,13 @@
           </button>
         </div>
         <div class="dropdown-section">
+          <div class="dropdown-label">GitHub</div>
+          <button class="dropdown-item" id="menu-auto-create-issues" title="Default behavior for the per-action Create-issue checkboxes">
+            <span class="dropdown-icon">⊕</span>
+            <span>Auto-create issues: <span id="menu-auto-create-issues-value">off</span></span>
+          </button>
+        </div>
+        <div class="dropdown-section">
           <div class="dropdown-label">Project</div>
           <button class="dropdown-item" id="menu-switch">
             <span class="dropdown-icon">⇄</span>
@@ -298,6 +305,10 @@
       <button class="btn-icon" id="btn-cancel-icon">&times;</button>
     </div>
     <textarea id="input-requirement" rows="8" placeholder="Describe what you want to build…&#10;&#10;Head Leader will analyze and decompose this into implementable features."></textarea>
+    <label class="checkbox-label" style="font-size:12.5px;margin-top:8px;display:block">
+      <input type="checkbox" id="submit-create-issue">
+      Create GitHub idea issue
+    </label>
     <div class="modal-actions">
       <button id="btn-cancel" class="btn">Cancel</button>
       <button id="btn-do-submit" class="btn btn-primary">Submit to Head Leader</button>
@@ -329,6 +340,6 @@
 
 <div id="chat-drawer" class="chat-drawer hidden"></div>
 
-<script src="/static/app.js?v=6"></script>
+<script src="/static/app.js?v=7"></script>
 </body>
 </html>
