@@ -12,6 +12,7 @@ async def test_hl_runner_success(tmp_path):
     spawner = MagicMock()
     handle = MagicMock()
     handle.process.returncode = 0
+    handle.session_id = "sess-1"
     spawner.spawn = AsyncMock(return_value=handle)
     res = MagicMock()
     res.stdout = ('some log\nORCHESTRA_RESULT:'
@@ -19,7 +20,6 @@ async def test_hl_runner_success(tmp_path):
                   '"depends_on":[],"priority":1,"spec":"s"}]}\n')
     res.stderr = ""
     res.exit_code = 0
-    res.session_id = "sess-1"
     spawner.wait = AsyncMock(return_value=res)
 
     runner = HLRunner(spawner, requirement_loader=AsyncMock(return_value="REQ TEXT"),
@@ -44,10 +44,11 @@ from orchestra.core.runners.fr import FRRunner
 async def test_fr_runner_success(tmp_path, monkeypatch):
     spawner = MagicMock()
     handle = MagicMock(); handle.process.returncode = 0
+    handle.session_id = "sess-fr"
     spawner.spawn = AsyncMock(return_value=handle)
     res = MagicMock()
     res.stdout = 'ORCHESTRA_RESULT:{"status":"success","notes":"impl done"}\n'
-    res.stderr = ""; res.exit_code = 0; res.session_id = "sess-fr"
+    res.stderr = ""; res.exit_code = 0
     spawner.wait = AsyncMock(return_value=res)
 
     # Mock worktree manager + git helpers
@@ -86,10 +87,11 @@ from orchestra.core.runners.fi import FIRunner
 async def test_fi_runner_clean_pass(tmp_path):
     spawner = MagicMock()
     handle = MagicMock(); handle.process.returncode = 0
+    handle.session_id = "sess-fi"
     spawner.spawn = AsyncMock(return_value=handle)
     res = MagicMock()
     res.stdout = 'ORCHESTRA_RESULT:{"recommendation":"approve"}\n'
-    res.stderr = ""; res.exit_code = 0; res.session_id = "sess-fi"
+    res.stderr = ""; res.exit_code = 0
     spawner.wait = AsyncMock(return_value=res)
 
     class FakeServer:

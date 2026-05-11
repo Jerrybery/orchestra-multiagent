@@ -71,14 +71,14 @@ class HLRunner(AgentRunner):
             parsed = _parse_result(result.stdout)
             if not parsed or "features" not in parsed:
                 return RunResult(
-                    status="failed", session_id=getattr(result, "session_id", None),
+                    status="failed", session_id=handle.session_id,
                     result_snapshot={"raw_stdout_tail": result.stdout[-500:]},
                     error_message="HL produced no structured output",
                     used_resume=bool(resume_args), fell_back=fell_back,
                 )
             return RunResult(
                 status="succeeded",
-                session_id=getattr(result, "session_id", None),
+                session_id=handle.session_id,
                 result_snapshot={
                     "summary": parsed.get("summary", ""),
                     "features": parsed["features"],

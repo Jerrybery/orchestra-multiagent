@@ -106,7 +106,7 @@ class FRRunner(AgentRunner):
             if parsed and parsed.get("status") == "blocked":
                 return RunResult(
                     status="failed",
-                    session_id=getattr(result, "session_id", None),
+                    session_id=handle.session_id,
                     result_snapshot={"branch": branch, "head_commit": head,
                                      "files_changed": files,
                                      "notes": parsed.get("notes", "")},
@@ -116,7 +116,7 @@ class FRRunner(AgentRunner):
             if result.exit_code != 0:
                 return RunResult(
                     status="failed",
-                    session_id=getattr(result, "session_id", None),
+                    session_id=handle.session_id,
                     result_snapshot={"branch": branch, "head_commit": head,
                                      "files_changed": files},
                     error_message=(parsed.get("reason") if parsed
@@ -125,7 +125,7 @@ class FRRunner(AgentRunner):
                 )
             return RunResult(
                 status="succeeded",
-                session_id=getattr(result, "session_id", None),
+                session_id=handle.session_id,
                 result_snapshot={
                     "branch": branch, "head_commit": head,
                     "files_changed": files,

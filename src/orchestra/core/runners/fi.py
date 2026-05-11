@@ -153,7 +153,7 @@ class FIRunner(AgentRunner):
             await self._git_reset(wt_path, baseline_head)
             return RunResult(
                 status="succeeded",
-                session_id=getattr(result, "session_id", None),
+                session_id=handle.session_id,
                 result_snapshot={
                     "recommendation": "reject",
                     "reason": "FI modified the worktree, which is forbidden.",
@@ -168,7 +168,7 @@ class FIRunner(AgentRunner):
         critical, important = self._parse_report(task.id)
         return RunResult(
             status="succeeded",
-            session_id=getattr(result, "session_id", None),
+            session_id=handle.session_id,
             result_snapshot={
                 "recommendation": recommendation,
                 "critical": critical, "important": important,
