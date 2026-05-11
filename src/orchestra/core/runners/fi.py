@@ -7,7 +7,7 @@ import re
 from typing import Optional, Callable, Awaitable
 
 from orchestra.core.agent_spawner import AgentRole
-from .base import AgentRunner, RunContext, RunResult, CancelToken
+from .base import AgentRunner, RunContext, RunResult, CancelToken, render_chat_context_block
 
 log = logging.getLogger(__name__)
 _RESULT_PATTERN = re.compile(r"ORCHESTRA_RESULT:({.*})")
@@ -97,6 +97,9 @@ class FIRunner(AgentRunner):
             system_prompt = self._load_prompt(task.id)
             system_prompt = system_prompt.replace("{base_url}", run_cfg.base_url)
             system_prompt = system_prompt.replace("{dev_server_log_path}", str(dev_log))
+            system_prompt = system_prompt.replace(
+                "{chat_context_block}", render_chat_context_block(ctx)
+            )
 
             findings_block = ""
             if ctx.prev_run and ctx.prev_run.result_snapshot:
@@ -164,6 +167,15 @@ class FIRunner(AgentRunner):
             )
 
         parsed = _parse_result(result.stdout)
+        if ctx.user_message and not parsed:
+            text = result.stdout.strip()
+            return RunResult(
+                status="succeeded",
+                session_id=handle.session_id,
+                result_snapshot={"kind": "chat", "reply": text[-2000:]},
+                error_message=None,
+                used_resume=bool(resume_args), fell_back=fell_back,
+            )
         recommendation = parsed.get("recommendation", "unknown") if parsed else "unknown"
         critical, important = self._parse_report(task.id)
         return RunResult(

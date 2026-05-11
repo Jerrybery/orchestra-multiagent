@@ -127,3 +127,29 @@ async def test_fi_runner_clean_pass(tmp_path):
     result = await runner.run(ctx, CancelToken())
     assert result.status == "succeeded"
     assert result.result_snapshot["recommendation"] == "approve"
+
+
+@pytest.mark.asyncio
+async def test_hl_runner_chat_reply_only(tmp_path):
+    spawner = MagicMock(); handle = MagicMock(); handle.process.returncode = 0
+    handle.session_id = "sess-chat"
+    spawner.spawn = AsyncMock(return_value=handle)
+    res = MagicMock()
+    res.stdout = "Sure, I'll explain — the reason is X"
+    res.stderr = ""; res.exit_code = 0
+    spawner.wait = AsyncMock(return_value=res)
+    runner = HLRunner(spawner,
+                     requirement_loader=AsyncMock(return_value="REQ"),
+                     prompt_loader=lambda: "PROMPT {chat_context_block}")
+    ctx = RunContext(
+        role="hl", target_kind="requirement", target_id="req-1",
+        mode="manual", resume_session_id="sess-orig",
+        prev_run=MagicMock(result_snapshot={"features": []}),
+        project_dir=tmp_path, orchestra_dir=tmp_path / ".o",
+        log_path=str(tmp_path / "hl.log"),
+        user_message="why so many features?",
+    )
+    result = await runner.run(ctx, CancelToken())
+    assert result.status == "succeeded"
+    assert result.result_snapshot.get("kind") == "chat"
+    assert "reason is X" in result.result_snapshot["reply"]

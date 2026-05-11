@@ -30,6 +30,10 @@ This is a git worktree on a dedicated branch. You have full read/write access.
 5. **Commit your work** — make meaningful git commits on your branch when done. If an issue number is provided below, reference it in commit messages (e.g. "feat: add login API, refs #12")
 6. **Stay scoped** — only implement what the spec asks for, nothing more
 
+## Chat / Continuation Context
+
+{chat_context_block}
+
 ## Output
 
 When you are done, output a summary prefixed with `ORCHESTRA_RESULT:` on a single line:

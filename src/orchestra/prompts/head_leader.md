@@ -47,6 +47,10 @@ If a feature maps to a specific GitHub issue, note it in the spec: `Source: #55`
 
 {conventions_content}
 
+## Chat / Continuation Context
+
+{chat_context_block}
+
 ## Output Format
 
 After completing your analysis, you MUST write a JSON summary to stdout as the LAST thing you output. The JSON must be on a single line and prefixed with `ORCHESTRA_RESULT:`:
