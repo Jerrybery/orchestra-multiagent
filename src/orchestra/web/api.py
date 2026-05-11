@@ -1079,3 +1079,141 @@ async def event_stream():
 
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ── Agent Runs (manual trigger + history) ─────────────────────────
+
+class RunSubmitRequest(BaseModel):
+    role: str                                   # 'hl' | 'fr' | 'fi'
+    target_id: str
+    resume: bool = True
+    mode: str = "manual"                        # 'manual' | 'auto'
+    wait: bool = False
+
+
+@app.post("/api/runs")
+async def submit_run(req: RunSubmitRequest):
+    orch = _orch()
+    if req.role not in {"hl", "fr", "fi"}:
+        raise HTTPException(400, "role must be hl|fr|fi")
+    target_kind = "requirement" if req.role == "hl" else "task"
+    run_id = await orch.manager.submit(
+        role=req.role, target_kind=target_kind, target_id=req.target_id,
+        mode=req.mode, resume=req.resume,
+    )
+    if req.wait:
+        await orch.manager.wait_for_finish(run_id)
+        run = await orch.task_queue.get_agent_run(run_id)
+        return {
+            "run_id": run.id, "status": run.status,
+            "result_snapshot": run.result_snapshot,
+            "error_message": run.error_message,
+        }
+    return {"run_id": run_id, "status": "running"}
+
+
+@app.get("/api/runs")
+async def list_runs(target_id: Optional[str] = None,
+                    role: Optional[str] = None,
+                    status: Optional[str] = None,
+                    limit: int = 50):
+    orch = _orch()
+    runs = await orch.task_queue.list_agent_runs(
+        target_id=target_id, role=role, status=status, limit=limit,
+    )
+    return [{
+        "id": r.id, "role": r.role, "target_kind": r.target_kind,
+        "target_id": r.target_id, "mode": r.mode, "status": r.status,
+        "started_at": r.started_at, "finished_at": r.finished_at,
+        "session_id": r.session_id, "previous_run_id": r.previous_run_id,
+        "resumed_from_run_id": r.resumed_from_run_id,
+        "error_message": r.error_message,
+    } for r in runs]
+
+
+@app.get("/api/runs/{run_id}")
+async def get_run(run_id: int):
+    orch = _orch()
+    run = await orch.task_queue.get_agent_run(run_id)
+    if not run:
+        raise HTTPException(404, f"run {run_id} not found")
+    msgs = await orch.task_queue.get_run_messages(run_id)
+    return {
+        "id": run.id, "role": run.role, "target_kind": run.target_kind,
+        "target_id": run.target_id, "mode": run.mode, "status": run.status,
+        "started_at": run.started_at, "finished_at": run.finished_at,
+        "session_id": run.session_id, "previous_run_id": run.previous_run_id,
+        "resumed_from_run_id": run.resumed_from_run_id,
+        "result_snapshot": run.result_snapshot,
+        "error_message": run.error_message, "log_path": run.log_path,
+        "messages": [{
+            "id": m.id, "role": m.role, "content": m.content,
+            "created_at": m.created_at,
+        } for m in msgs],
+    }
+
+
+@app.get("/api/runs/{run_id}/log")
+async def stream_run_log(run_id: int):
+    orch = _orch()
+    run = await orch.task_queue.get_agent_run(run_id)
+    if not run:
+        raise HTTPException(404, "not found")
+    log_path = Path(run.log_path or "")
+    if not log_path.exists():
+        return StreamingResponse(iter([b"(no log)"]), media_type="text/plain")
+    async def gen():
+        with open(log_path, "rb") as f:
+            yield f.read()
+    return StreamingResponse(gen(), media_type="text/plain")
+
+
+@app.post("/api/runs/{run_id}/cancel")
+async def cancel_run(run_id: int):
+    orch = _orch()
+    ok = await orch.manager.cancel(run_id)
+    if not ok:
+        raise HTTPException(404, "run not running")
+    return {"status": "cancelling"}
+
+
+class ChatRequest(BaseModel):
+    message: str
+    wait: bool = False
+
+
+@app.post("/api/runs/{run_id}/chat")
+async def chat_with_run(run_id: int, req: ChatRequest):
+    orch = _orch()
+    try:
+        new_run_id = await orch.manager.chat(origin_run_id=run_id, message=req.message)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    if req.wait:
+        await orch.manager.wait_for_finish(new_run_id)
+        run = await orch.task_queue.get_agent_run(new_run_id)
+        return {"run_id": run.id, "status": run.status,
+                "result_snapshot": run.result_snapshot,
+                "error_message": run.error_message}
+    return {"run_id": new_run_id, "status": "running"}
+
+
+@app.delete("/api/auto-pauses/{target_kind}/{target_id}")
+async def delete_auto_pause(target_kind: str, target_id: str):
+    orch = _orch()
+    await orch.task_queue.remove_auto_pause(target_kind, target_id)
+    await orch._emit("auto_pause_removed", {
+        "target_kind": target_kind, "target_id": target_id,
+    })
+    return {"status": "removed"}
+
+
+@app.get("/api/auto-pauses")
+async def list_auto_pauses():
+    orch = _orch()
+    pauses = await orch.task_queue.list_auto_pauses()
+    return [{
+        "target_kind": p.target_kind, "target_id": p.target_id,
+        "paused_at": p.paused_at, "caused_by_run_id": p.caused_by_run_id,
+        "reason": p.reason,
+    } for p in pauses]
