@@ -479,7 +479,8 @@ class IssueTracker:
         })
 
         # Load prompt
-        prompt_file = Path(__file__).parent.parent / "prompts" / "discussion_analyst.md"
+        from .orchestrator import _prompts_dir
+        prompt_file = _prompts_dir() / "discussion_analyst.md"
         system_prompt = prompt_file.read_text()
 
         # Inject project context
