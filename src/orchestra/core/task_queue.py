@@ -103,6 +103,50 @@ CREATE TABLE IF NOT EXISTS draft_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_draft_messages_draft ON draft_messages(draft_id);
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT NOT NULL,
+    target_kind TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    session_id TEXT,
+    resumed_from_run_id INTEGER,
+    fallback_from_run_id INTEGER,
+    previous_run_id INTEGER,
+    started_at REAL NOT NULL,
+    finished_at REAL,
+    result_snapshot TEXT,
+    error_message TEXT,
+    log_path TEXT,
+    FOREIGN KEY (resumed_from_run_id) REFERENCES agent_runs(id),
+    FOREIGN KEY (fallback_from_run_id) REFERENCES agent_runs(id),
+    FOREIGN KEY (previous_run_id) REFERENCES agent_runs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_runs_target ON agent_runs(role, target_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_status ON agent_runs(status);
+
+CREATE TABLE IF NOT EXISTS auto_pauses (
+    target_kind TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    paused_at REAL NOT NULL,
+    caused_by_run_id INTEGER,
+    reason TEXT,
+    PRIMARY KEY (target_kind, target_id),
+    FOREIGN KEY (caused_by_run_id) REFERENCES agent_runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS run_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES agent_runs(id)
+);
+CREATE INDEX IF NOT EXISTS idx_run_messages_run ON run_messages(run_id);
 """
 
 
@@ -223,6 +267,50 @@ class Task:
         d["status"] = TaskStatus(d["status"])
         d["depends_on"] = json.loads(d["depends_on"])
         return cls(**d)
+
+
+@dataclass
+class AgentRun:
+    id: int
+    role: str
+    target_kind: str
+    target_id: str
+    mode: str
+    status: str
+    started_at: float
+    session_id: Optional[str] = None
+    resumed_from_run_id: Optional[int] = None
+    fallback_from_run_id: Optional[int] = None
+    previous_run_id: Optional[int] = None
+    finished_at: Optional[float] = None
+    result_snapshot: Optional[dict] = None
+    error_message: Optional[str] = None
+    log_path: Optional[str] = None
+
+    @classmethod
+    def from_row(cls, row) -> "AgentRun":
+        d = dict(row)
+        if d.get("result_snapshot"):
+            d["result_snapshot"] = json.loads(d["result_snapshot"])
+        return cls(**d)
+
+
+@dataclass
+class AutoPause:
+    target_kind: str
+    target_id: str
+    paused_at: float
+    caused_by_run_id: Optional[int] = None
+    reason: Optional[str] = None
+
+
+@dataclass
+class RunMessage:
+    id: int
+    run_id: int
+    role: str
+    content: str
+    created_at: float
 
 
 class TaskQueue:
@@ -695,3 +783,126 @@ class TaskQueue:
             (draft_id,),
         ) as cur:
             return [DraftMessage(**dict(row)) async for row in cur]
+
+    # ── AgentRun CRUD ─────────────────────────────────────────
+
+    async def add_agent_run(self, role: str, target_kind: str, target_id: str,
+                            mode: str, log_path: str,
+                            resumed_from_run_id: Optional[int] = None,
+                            fallback_from_run_id: Optional[int] = None) -> AgentRun:
+        now = time.time()
+        # find previous succeeded run for this (role, target_id)
+        async with self._db.execute(
+            "SELECT id FROM agent_runs WHERE role = ? AND target_id = ? "
+            "AND status = 'succeeded' ORDER BY started_at DESC LIMIT 1",
+            (role, target_id),
+        ) as cur:
+            row = await cur.fetchone()
+            previous_run_id = row["id"] if row else None
+
+        cur = await self._db.execute(
+            "INSERT INTO agent_runs (role, target_kind, target_id, mode, status, "
+            "started_at, log_path, resumed_from_run_id, fallback_from_run_id, "
+            "previous_run_id) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)",
+            (role, target_kind, target_id, mode, now, log_path,
+             resumed_from_run_id, fallback_from_run_id, previous_run_id),
+        )
+        run_id = cur.lastrowid
+        await self._db.commit()
+        return AgentRun(
+            id=run_id, role=role, target_kind=target_kind, target_id=target_id,
+            mode=mode, status="running", started_at=now, log_path=log_path,
+            resumed_from_run_id=resumed_from_run_id,
+            fallback_from_run_id=fallback_from_run_id,
+            previous_run_id=previous_run_id,
+        )
+
+    async def get_agent_run(self, run_id: int) -> Optional[AgentRun]:
+        async with self._db.execute(
+            "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return AgentRun.from_row(row) if row else None
+
+    async def list_agent_runs(self, target_id: Optional[str] = None,
+                              role: Optional[str] = None,
+                              status: Optional[str] = None,
+                              limit: int = 50) -> list[AgentRun]:
+        clauses = []
+        params = []
+        if target_id:
+            clauses.append("target_id = ?"); params.append(target_id)
+        if role:
+            clauses.append("role = ?"); params.append(role)
+        if status:
+            clauses.append("status = ?"); params.append(status)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = f"SELECT * FROM agent_runs {where} ORDER BY started_at DESC LIMIT ?"
+        params.append(limit)
+        async with self._db.execute(sql, params) as cur:
+            return [AgentRun.from_row(row) async for row in cur]
+
+    async def finish_agent_run(self, run_id: int, status: str,
+                               result_snapshot: Optional[dict] = None,
+                               session_id: Optional[str] = None,
+                               error_message: Optional[str] = None) -> None:
+        await self._db.execute(
+            "UPDATE agent_runs SET status = ?, finished_at = ?, "
+            "result_snapshot = ?, session_id = ?, error_message = ? WHERE id = ?",
+            (status, time.time(),
+             json.dumps(result_snapshot) if result_snapshot else None,
+             session_id, error_message, run_id),
+        )
+        await self._db.commit()
+
+    # ── AutoPause CRUD ────────────────────────────────────────
+
+    async def add_auto_pause(self, target_kind: str, target_id: str,
+                              caused_by_run_id: Optional[int] = None,
+                              reason: Optional[str] = None) -> None:
+        await self._db.execute(
+            "INSERT OR REPLACE INTO auto_pauses (target_kind, target_id, "
+            "paused_at, caused_by_run_id, reason) VALUES (?, ?, ?, ?, ?)",
+            (target_kind, target_id, time.time(), caused_by_run_id, reason),
+        )
+        await self._db.commit()
+
+    async def remove_auto_pause(self, target_kind: str, target_id: str) -> None:
+        await self._db.execute(
+            "DELETE FROM auto_pauses WHERE target_kind = ? AND target_id = ?",
+            (target_kind, target_id),
+        )
+        await self._db.commit()
+
+    async def is_auto_paused(self, target_kind: str, target_id: str) -> bool:
+        async with self._db.execute(
+            "SELECT 1 FROM auto_pauses WHERE target_kind = ? AND target_id = ?",
+            (target_kind, target_id),
+        ) as cur:
+            return (await cur.fetchone()) is not None
+
+    async def list_auto_pauses(self) -> list[AutoPause]:
+        async with self._db.execute(
+            "SELECT * FROM auto_pauses ORDER BY paused_at DESC"
+        ) as cur:
+            return [AutoPause(**dict(row)) async for row in cur]
+
+    # ── RunMessage CRUD ───────────────────────────────────────
+
+    async def add_run_message(self, run_id: int, role: str, content: str) -> RunMessage:
+        now = time.time()
+        cur = await self._db.execute(
+            "INSERT INTO run_messages (run_id, role, content, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (run_id, role, content, now),
+        )
+        await self._db.commit()
+        return RunMessage(id=cur.lastrowid, run_id=run_id, role=role,
+                          content=content, created_at=now)
+
+    async def get_run_messages(self, run_id: int) -> list[RunMessage]:
+        async with self._db.execute(
+            "SELECT * FROM run_messages WHERE run_id = ? ORDER BY created_at ASC",
+            (run_id,),
+        ) as cur:
+            return [RunMessage(**dict(row)) async for row in cur]
