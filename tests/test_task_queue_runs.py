@@ -68,3 +68,14 @@ async def test_run_messages_append(tmp_path):
     await q.add_run_message(run.id, "assistant", "好的,我重拆")
     msgs = await q.get_run_messages(run.id)
     assert len(msgs) == 2 and msgs[0].role == "user"
+
+
+@pytest.mark.asyncio
+async def test_finish_agent_run_empty_snapshot_roundtrips(tmp_path):
+    """Empty dict snapshot must survive DB round-trip as {}, not None."""
+    q = TaskQueue(tmp_path / "t.db")
+    await q.init()
+    run = await q.add_agent_run("fr", "task", "feat-001", "auto", "/tmp/log")
+    await q.finish_agent_run(run.id, status="cancelled", result_snapshot={})
+    fetched = await q.get_agent_run(run.id)
+    assert fetched.result_snapshot == {}
