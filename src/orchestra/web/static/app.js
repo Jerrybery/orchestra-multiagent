@@ -1391,8 +1391,8 @@ function connectSSE() {
     }
 
     addLogEntry(event, JSON.stringify(data));
-    if (['hl_done','hl_failed','fr_done','fi_done','task_done','task_rejected',
-         'tasks_promoted','fr_start','fi_start','proposal_approved','proposal_rejected',
+    if (['hl_done','hl_failed','task_done','task_rejected',
+         'tasks_promoted','proposal_approved','proposal_rejected',
          ].includes(event)) {
       fetchGraph();
       fetchAgents();

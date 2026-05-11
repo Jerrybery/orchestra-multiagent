@@ -149,10 +149,14 @@ def render_chat_context_block(ctx: RunContext) -> str:
         return "(this is a fresh run)"
     block = []
     if ctx.prev_run and ctx.prev_run.result_snapshot:
-        block.append("### Previous result snapshot\n")
-        block.append("```json\n" + _json.dumps(
-            ctx.prev_run.result_snapshot, indent=2, ensure_ascii=False
-        ) + "\n```\n")
+        # Features are injected separately by HLRunner into the task prompt;
+        # exclude them here to avoid double-injection.
+        snap = {k: v for k, v in ctx.prev_run.result_snapshot.items() if k != "features"}
+        if snap:
+            block.append("### Previous result snapshot\n")
+            block.append("```json\n" + _json.dumps(
+                snap, indent=2, ensure_ascii=False
+            ) + "\n```\n")
     block.append("### User's feedback\n")
     block.append(ctx.user_message + "\n")
     block.append(

@@ -261,7 +261,6 @@ class Task:
     source_issue: Optional[int] = None  # GitHub issue that originated this work
     created_at: float = 0.0
     updated_at: float = 0.0
-    fr_session_id: Optional[str] = None
     fail_reason: Optional[str] = None
     spec: Optional[str] = None
 
@@ -270,6 +269,8 @@ class Task:
         d = dict(row)
         d["status"] = TaskStatus(d["status"])
         d["depends_on"] = json.loads(d["depends_on"])
+        # Legacy column kept in DB for backward compat; no longer used in Python.
+        d.pop("fr_session_id", None)
         return cls(**d)
 
 
@@ -549,7 +550,7 @@ class TaskQueue:
         params: list = [new_status.value, time.time()]
 
         for col in ("assigned_to", "branch", "worktree_path",
-                    "reject_reason", "fail_reason", "fr_session_id"):
+                    "reject_reason", "fail_reason"):
             if col in kwargs:
                 sets.append(f"{col} = ?")
                 params.append(kwargs[col])
@@ -560,16 +561,6 @@ class TaskQueue:
         )
         await self._db.commit()
         return await self.get_task(task_id)
-
-    async def set_fr_session_id(self, task_id: str, sid: Optional[str]) -> None:
-        """Persist the FR (Feature Realizer) Claude session id for a task.
-
-        Pass `None` to clear it.
-        """
-        await self._db.execute(
-            "UPDATE tasks SET fr_session_id = ? WHERE id = ?", (sid, task_id)
-        )
-        await self._db.commit()
 
     async def update_task_spec(self, task_id: str, spec: str) -> None:
         await self._db.execute(
