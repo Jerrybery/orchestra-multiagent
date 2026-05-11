@@ -15,7 +15,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS requirements (
     id TEXT PRIMARY KEY,
     content TEXT NOT NULL,
-    created_at REAL NOT NULL
+    created_at REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     spec_path TEXT,
     reject_reason TEXT,
     source_issue INTEGER,
+    spec TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     FOREIGN KEY (requirement_id) REFERENCES requirements(id)
@@ -182,6 +184,7 @@ class Requirement:
     id: str
     content: str
     created_at: float = 0.0
+    status: str = "pending"     # NEW
 
 
 @dataclass
@@ -260,6 +263,7 @@ class Task:
     updated_at: float = 0.0
     fr_session_id: Optional[str] = None
     fail_reason: Optional[str] = None
+    spec: Optional[str] = None    # NEW: spec content (moved from disk in Task 1.4)
 
     @classmethod
     def from_row(cls, row: aiosqlite.Row) -> Task:
@@ -356,6 +360,28 @@ class TaskQueue:
             "CREATE INDEX IF NOT EXISTS idx_review_findings_task ON review_findings (task_id, round)"
         )
 
+        # NEW: spec on tasks
+        async with self._db.execute("PRAGMA table_info(tasks)") as cur:
+            cols = {row["name"] async for row in cur}
+        if "spec" not in cols:
+            await self._db.execute("ALTER TABLE tasks ADD COLUMN spec TEXT")
+
+        # NEW: status on requirements
+        async with self._db.execute("PRAGMA table_info(requirements)") as cur:
+            cols = {row["name"] async for row in cur}
+        if "status" not in cols:
+            await self._db.execute(
+                "ALTER TABLE requirements ADD COLUMN status TEXT DEFAULT 'pending'"
+            )
+
+        # NEW: run_id on review_findings
+        async with self._db.execute("PRAGMA table_info(review_findings)") as cur:
+            cols = {row["name"] async for row in cur}
+        if "run_id" not in cols:
+            await self._db.execute(
+                "ALTER TABLE review_findings ADD COLUMN run_id INTEGER"
+            )
+
     async def close(self) -> None:
         if self._db:
             await self._db.close()
@@ -378,6 +404,12 @@ class TaskQueue:
     async def get_all_requirements(self) -> list[Requirement]:
         async with self._db.execute("SELECT * FROM requirements ORDER BY created_at ASC") as cur:
             return [Requirement(**dict(row)) async for row in cur]
+
+    async def update_requirement_status(self, req_id: str, status: str) -> None:
+        await self._db.execute(
+            "UPDATE requirements SET status = ? WHERE id = ?", (status, req_id),
+        )
+        await self._db.commit()
 
     # ── Proposals ────────────────────────────────────────────────
 
@@ -536,6 +568,13 @@ class TaskQueue:
         """
         await self._db.execute(
             "UPDATE tasks SET fr_session_id = ? WHERE id = ?", (sid, task_id)
+        )
+        await self._db.commit()
+
+    async def update_task_spec(self, task_id: str, spec: str) -> None:
+        await self._db.execute(
+            "UPDATE tasks SET spec = ?, updated_at = ? WHERE id = ?",
+            (spec, time.time(), task_id),
         )
         await self._db.commit()
 
