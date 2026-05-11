@@ -188,6 +188,11 @@ class Orchestrator:
         await self.worktree.ensure_orchestra_gitignored()
         await self.task_queue.init()
 
+        self.context.attach_db(self.task_queue)
+        migrated = await self.context.migrate_specs_from_disk()
+        if migrated:
+            log.info("Migrated %d spec files into DB", migrated)
+
         if self.config.tracked_branch:
             log.info("Fetching remote and checking out tracked branch: %s",
                      self.config.tracked_branch)
