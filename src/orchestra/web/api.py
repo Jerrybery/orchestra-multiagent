@@ -433,7 +433,7 @@ async def get_graph():
     branches = await orch.worktree.list_branches()
 
     # Git commit log for the graph
-    commits = await orch.worktree.get_log_graph(max_count=80)
+    commits = await orch.worktree.get_log_graph(max_count=200)
 
     proposals_payload = [
         {"id": p.id, "requirement_id": p.requirement_id, "summary": p.summary,

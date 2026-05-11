@@ -392,7 +392,7 @@ class WorktreeManager:
             })
         return commits
 
-    async def get_log_graph(self, max_count: int = 50) -> list[dict]:
+    async def get_log_graph(self, max_count: int = 200) -> list[dict]:
         """Get git log with parent info for DAG rendering. Includes remote branches."""
         rc, out, _ = await self._run(
             "git", "log", "--all", "--remotes", f"--max-count={max_count}",
