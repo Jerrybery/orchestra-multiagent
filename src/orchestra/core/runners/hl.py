@@ -7,7 +7,7 @@ import re
 from typing import Optional, Callable, Awaitable
 
 from orchestra.core.agent_spawner import AgentRole
-from .base import AgentRunner, RunContext, RunResult, CancelToken
+from .base import AgentRunner, RunContext, RunResult, CancelToken, render_chat_context_block
 
 log = logging.getLogger(__name__)
 _RESULT_PATTERN = re.compile(r"ORCHESTRA_RESULT:({.*})")
@@ -35,6 +35,9 @@ class HLRunner(AgentRunner):
     async def run(self, ctx: RunContext, cancel: CancelToken) -> RunResult:
         requirement_text = await self._load_requirement(ctx.target_id)
         system_prompt = self._load_prompt()
+        system_prompt = system_prompt.replace(
+            "{chat_context_block}", render_chat_context_block(ctx)
+        )
         task_prompt = ctx.user_message or requirement_text
 
         # Inject previous run's features as context
@@ -69,6 +72,15 @@ class HLRunner(AgentRunner):
                                  result_snapshot={}, error_message="cancelled",
                                  used_resume=bool(resume_args), fell_back=fell_back)
             parsed = _parse_result(result.stdout)
+            if ctx.user_message and not parsed:
+                text = result.stdout.strip()
+                return RunResult(
+                    status="succeeded",
+                    session_id=handle.session_id,
+                    result_snapshot={"kind": "chat", "reply": text[-2000:]},
+                    error_message=None,
+                    used_resume=bool(resume_args), fell_back=fell_back,
+                )
             if not parsed or "features" not in parsed:
                 return RunResult(
                     status="failed", session_id=handle.session_id,

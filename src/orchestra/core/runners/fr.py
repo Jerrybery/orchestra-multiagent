@@ -8,7 +8,7 @@ import re
 from typing import Optional, Callable, Awaitable
 
 from orchestra.core.agent_spawner import AgentRole
-from .base import AgentRunner, RunContext, RunResult, CancelToken
+from .base import AgentRunner, RunContext, RunResult, CancelToken, render_chat_context_block
 
 log = logging.getLogger(__name__)
 _RESULT_PATTERN = re.compile(r"ORCHESTRA_RESULT:({.*})")
@@ -46,6 +46,9 @@ class FRRunner(AgentRunner):
         branch = self._wt.get_branch_name(task.id)
 
         system_prompt = self._load_prompt(task.id)
+        system_prompt = system_prompt.replace(
+            "{chat_context_block}", render_chat_context_block(ctx)
+        )
 
         if ctx.user_message:
             task_prompt = ctx.user_message
@@ -79,6 +82,9 @@ class FRRunner(AgentRunner):
         resume_args = ["--resume", ctx.resume_session_id] if ctx.resume_session_id else []
         # Resume mode passes the short feedback prompt; fresh fallback rebuilds full
         fresh_system = self._load_prompt(task.id)
+        fresh_system = fresh_system.replace(
+            "{chat_context_block}", render_chat_context_block(ctx)
+        )
         fresh_task = (
             f"Implement feature {task.id}: {task.title}\n\n"
             f"The full spec is in the system prompt above. Start implementing."
@@ -101,6 +107,15 @@ class FRRunner(AgentRunner):
                                  error_message="cancelled",
                                  used_resume=bool(resume_args), fell_back=fell_back)
             parsed = _parse_result(result.stdout)
+            if ctx.user_message and not parsed:
+                text = result.stdout.strip()
+                return RunResult(
+                    status="succeeded",
+                    session_id=handle.session_id,
+                    result_snapshot={"kind": "chat", "reply": text[-2000:]},
+                    error_message=None,
+                    used_resume=bool(resume_args), fell_back=fell_back,
+                )
             head = await self._git_head(wt_path)
             files = await self._git_files_changed(wt_path, "main")
             if parsed and parsed.get("status") == "blocked":
