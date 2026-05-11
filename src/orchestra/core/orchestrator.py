@@ -68,33 +68,6 @@ async def _git_reset_to(cwd: Path, head: str) -> None:
     await proc2.wait()
 
 
-# Paths commonly written by dev servers (Next.js HMR, Vite, npm, build caches).
-# Used to suppress false "FI modified worktree" violations when the running
-# project itself touches these during the FI window.
-_DEV_ARTIFACT_PATTERNS = (
-    ".next/", "node_modules/", "dist/", "build/", ".vite/", ".cache/",
-    ".turbo/", ".parcel-cache/", "next-env.d.ts", ".DS_Store",
-    "__pycache__/", ".pytest_cache/", ".pyc",
-)
-
-
-def _filter_dev_artifacts(status_output: str) -> str:
-    """Drop porcelain lines for paths that are commonly dev-server byproducts.
-
-    `git status --porcelain` lines start with a 2-char status code + space,
-    so the path begins at column 3. For renames the path may include
-    " -> " — substring match against the whole tail still catches our
-    well-known artifact prefixes correctly.
-    """
-    kept: list[str] = []
-    for line in status_output.splitlines():
-        path = line[3:] if len(line) > 3 else line
-        if any(p in path for p in _DEV_ARTIFACT_PATTERNS):
-            continue
-        kept.append(line)
-    return "\n".join(kept)
-
-
 def _extract_findings_section(md: str, heading: str) -> list[dict]:
     """Find '## {heading}' or '### {heading}' header and read bullet list under it.
 
@@ -779,40 +752,6 @@ class Orchestrator:
                 await self._emit("proposal_resumed", {"proposal_id": proposal_id})
 
     # ── FI helpers (still used by Runner for findings parsing) ──────
-
-    def _render_previous_findings(self, finding: dict) -> str:
-        """Render a prior round's findings into a markdown block to append to
-        the FI task prompt. Returns '' when there is nothing material."""
-        critical = finding.get("critical") or []
-        important = finding.get("important") or []
-        if not critical and not important:
-            return ""
-        out = [
-            "\n## Previous Review Findings (round {})".format(finding["round"]),
-            "This task was previously rejected. The previous reviewer identified:\n",
-        ]
-        if critical:
-            out.append("Critical:")
-            for it in critical:
-                out.append(
-                    f"- {it.get('file','?')}:{it.get('line','?')} — {it.get('desc','')}"
-                )
-        if important:
-            out.append("\nImportant:")
-            for it in important:
-                out.append(
-                    f"- {it.get('file','?')}:{it.get('line','?')} — {it.get('desc','')}"
-                )
-        out.append("\nVerify these specific issues are addressed in the current diff.")
-        out.append(
-            "You are NOT bound by the previous reviewer's overall verdict — "
-            "re-evaluate independently."
-        )
-        return "\n".join(out)
-
-    async def _next_review_round(self, task_id: str) -> int:
-        latest = await self.task_queue.get_latest_review_finding(task_id)
-        return (latest["round"] + 1) if latest else 1
 
     def _parse_findings_from_report(self, task_id: str) -> tuple[list, list]:
         report_path = self.context.get_report_path(task_id)

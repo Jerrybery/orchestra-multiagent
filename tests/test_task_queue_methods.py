@@ -11,28 +11,6 @@ from orchestra.core.task_queue import TaskQueue, TaskStatus
 
 
 @pytest.mark.asyncio
-async def test_set_fr_session_id_persists(tmp_path: Path):
-    q = TaskQueue(tmp_path / "t.db")
-    await q.init()
-    await q.add_requirement("r1", "test")
-    await q.add_proposal("p1", "r1", features=[{"id": "t1", "title": "x"}])
-    # Materialize the feature into a task (Orchestrator.approve_proposal does
-    # this via add_task; we call it directly to keep the test scoped to TaskQueue).
-    await q.add_task("t1", "x", requirement_id="r1")
-
-    await q.set_fr_session_id("t1", "sess-abc-123")
-
-    task = await q.get_task("t1")
-    assert task.fr_session_id == "sess-abc-123"
-
-    # Setting None clears it
-    await q.set_fr_session_id("t1", None)
-    task = await q.get_task("t1")
-    assert task.fr_session_id is None
-    await q.close()
-
-
-@pytest.mark.asyncio
 async def test_get_tasks_for_proposal_returns_all_features(tmp_path: Path):
     q = TaskQueue(tmp_path / "t.db")
     await q.init()

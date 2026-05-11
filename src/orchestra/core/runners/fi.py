@@ -138,7 +138,6 @@ class FIRunner(AgentRunner):
             )
             result = await self._wait_or_cancel(handle, cancel)
             if result is None:
-                await server.stop()
                 return RunResult(status="cancelled", session_id=None,
                                  result_snapshot={}, error_message="cancelled",
                                  used_resume=bool(resume_args), fell_back=fell_back)
