@@ -32,7 +32,7 @@ class AgentRunManager:
         self._log_path_fn = log_path_fn
         self._emit = emit
         self._fi_lock = asyncio.Lock()
-        self._running: dict[int, tuple[asyncio.Task, CancelToken]] = {}
+        self._running: dict[int, tuple[asyncio.Task, CancelToken, str]] = {}
         self._finished_events: dict[int, asyncio.Event] = {}
 
     async def submit(self, role: str, target_kind: str, target_id: str,
@@ -66,7 +66,7 @@ class AgentRunManager:
         evt = asyncio.Event()
         self._finished_events[run.id] = evt
         task = asyncio.create_task(self._drive(run.id, ctx, cancel, evt))
-        self._running[run.id] = (task, cancel)
+        self._running[run.id] = (task, cancel, role)
         await self._emit_evt("run_created", {
             "run_id": run.id, "role": role, "target_id": target_id, "mode": mode,
         })
@@ -138,18 +138,22 @@ class AgentRunManager:
         evt = self._finished_events.get(run_id)
         if evt:
             await evt.wait()
+            # First caller cleans up; subsequent callers find no evt and
+            # return immediately (the run is already finished).
+            self._finished_events.pop(run_id, None)
 
     async def cancel(self, run_id: int) -> bool:
         """Signal cancellation for a running run."""
         entry = self._running.get(run_id)
         if not entry:
             return False
-        _, cancel = entry
+        _, cancel, _ = entry
         cancel.set()
         return True
 
     def running_count(self, role: str) -> int:
-        return sum(1 for (t, _) in self._running.values() if not t.done())
+        return sum(1 for (t, _, r) in self._running.values()
+                   if r == role and not t.done())
 
     async def _emit_evt(self, event: str, data: dict) -> None:
         if self._emit:
