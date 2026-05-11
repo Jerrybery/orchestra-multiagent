@@ -213,3 +213,85 @@ class AgentRunManager:
     async def _emit_evt(self, event: str, data: dict) -> None:
         if self._emit:
             await self._emit(event, data)
+
+
+class AutoDriver:
+    """Background loop that submits auto-mode runs based on task state."""
+
+    def __init__(self, task_queue: TaskQueue, manager: AgentRunManager,
+                 config, poll_interval: float = 2.0):
+        self.task_queue = task_queue
+        self.manager = manager
+        self.config = config
+        self._poll_interval = poll_interval
+        self._stop = False
+
+    def stop(self) -> None:
+        self._stop = True
+
+    async def run_loop(self) -> None:
+        self._stop = False
+        log.info("AutoDriver loop started")
+        while not self._stop:
+            try:
+                await self._tick()
+            except Exception:
+                log.exception("AutoDriver tick error")
+            await asyncio.sleep(self._poll_interval)
+        log.info("AutoDriver loop stopped")
+
+    async def _tick(self) -> None:
+        await self._tick_hl()
+        await self.task_queue.promote_ready_tasks()
+        await self._tick_fr()
+        await self._tick_fi()
+
+    async def _tick_hl(self) -> None:
+        reqs = await self.task_queue.get_all_requirements()
+        running = await self.task_queue.list_agent_runs(role="hl", status="running")
+        running_targets = {r.target_id for r in running}
+        for req in reqs:
+            if getattr(req, "status", "pending") != "pending":
+                continue
+            if req.id in running_targets:
+                continue
+            if await self.task_queue.is_auto_paused("requirement", req.id):
+                continue
+            if self.manager.running_count("hl") >= self.config.max_hl:
+                break
+            await self.manager.submit(
+                role="hl", target_kind="requirement",
+                target_id=req.id, mode="auto",
+            )
+
+    async def _tick_fr(self) -> None:
+        assigned = await self.task_queue.get_tasks(TaskStatus.ASSIGNED)
+        running = await self.task_queue.list_agent_runs(role="fr", status="running")
+        running_targets = {r.target_id for r in running}
+        for task in assigned:
+            if task.id in running_targets:
+                continue
+            if await self.task_queue.is_auto_paused("task", task.id):
+                continue
+            if self.manager.running_count("fr") >= self.config.max_fr:
+                break
+            await self.manager.submit(
+                role="fr", target_kind="task",
+                target_id=task.id, mode="auto",
+            )
+
+    async def _tick_fi(self) -> None:
+        implemented = await self.task_queue.get_tasks(TaskStatus.IMPLEMENTED)
+        running = await self.task_queue.list_agent_runs(role="fi", status="running")
+        running_targets = {r.target_id for r in running}
+        for task in implemented:
+            if task.id in running_targets:
+                continue
+            if await self.task_queue.is_auto_paused("task", task.id):
+                continue
+            if self.manager.running_count("fi") >= self.config.max_fi:
+                break
+            await self.manager.submit(
+                role="fi", target_kind="task",
+                target_id=task.id, mode="auto",
+            )

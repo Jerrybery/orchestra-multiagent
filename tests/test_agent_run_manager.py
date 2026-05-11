@@ -114,3 +114,29 @@ async def test_chat_creates_new_run_linked_to_origin(tmp_path):
         for c in tq.add_run_message.call_args_list
     )
     assert found_assistant
+
+
+@pytest.mark.asyncio
+async def test_autodriver_skips_paused_targets(tmp_path):
+    from orchestra.core.agent_run_manager import AutoDriver
+    tq = MagicMock()
+    tq.get_all_requirements = AsyncMock(return_value=[
+        MagicMock(id="req-1", status="pending"),
+        MagicMock(id="req-2", status="pending"),
+    ])
+    tq.is_auto_paused = AsyncMock(side_effect=lambda kind, tid: tid == "req-2")
+    tq.list_agent_runs = AsyncMock(return_value=[])  # no running
+    tq.promote_ready_tasks = AsyncMock(return_value=[])
+    tq.get_tasks = AsyncMock(return_value=[])
+
+    mgr = MagicMock()
+    mgr.running_count = MagicMock(return_value=0)
+    mgr.submit = AsyncMock()
+
+    cfg = MagicMock(max_hl=2, max_fr=2, max_fi=1)
+    drv = AutoDriver(task_queue=tq, manager=mgr, config=cfg)
+    await drv._tick()
+    submitted_ids = [c.kwargs.get("target_id") or c.args[2]
+                      for c in mgr.submit.call_args_list]
+    assert "req-1" in submitted_ids
+    assert "req-2" not in submitted_ids
