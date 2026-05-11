@@ -72,3 +72,45 @@ async def test_finish_auto_failure_adds_auto_pause(tmp_path):
     tq.add_auto_pause.assert_called_once()
     args = tq.add_auto_pause.call_args
     assert args.args[0] == "requirement" or args.kwargs.get("target_kind") == "requirement"
+
+
+@pytest.mark.asyncio
+async def test_chat_creates_new_run_linked_to_origin(tmp_path):
+    tq = MagicMock()
+    origin_run = MagicMock(id=10, role="hl", target_kind="requirement",
+                           target_id="req-1", session_id="sess-orig")
+    tq.get_agent_run = AsyncMock(return_value=origin_run)
+    new_run = MagicMock(id=11)
+    new_run.previous_run_id = None
+    tq.add_agent_run = AsyncMock(return_value=new_run)
+    tq.add_run_message = AsyncMock()
+    tq.finish_agent_run = AsyncMock()
+    tq.is_auto_paused = AsyncMock(return_value=False)
+    tq.remove_auto_pause = AsyncMock()
+
+    runner = MagicMock()
+    runner.run = AsyncMock(return_value=RunResult(
+        status="succeeded", session_id="sess-new",
+        result_snapshot={"kind": "chat", "reply": "got it"},
+        error_message=None,
+    ))
+    mgr = AgentRunManager(
+        task_queue=tq,
+        runners={"hl": runner, "fr": MagicMock(), "fi": MagicMock()},
+        context={}, log_path_fn=lambda r, t: "/tmp/x",
+    )
+    rid = await mgr.chat(origin_run_id=10, message="please refine")
+    await mgr.wait_for_finish(rid)
+    # User message stored
+    tq.add_run_message.assert_any_call(11, "user", "please refine")
+    # Allow time for the background reply recording task to fire
+    import asyncio
+    for _ in range(10):
+        await asyncio.sleep(0.01)
+        if any(c.args[1] == "assistant" for c in tq.add_run_message.call_args_list):
+            break
+    found_assistant = any(
+        c.args[1] == "assistant"
+        for c in tq.add_run_message.call_args_list
+    )
+    assert found_assistant

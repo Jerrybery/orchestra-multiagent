@@ -25,12 +25,16 @@ class AgentRunManager:
 
     def __init__(self, task_queue: TaskQueue, runners: dict, context: dict,
                  log_path_fn: Callable[[str, str], str],
-                 emit: Optional[Callable[[str, dict], Awaitable[None]]] = None):
+                 emit: Optional[Callable[[str, dict], Awaitable[None]]] = None,
+                 hl_done_hook: Optional[Callable] = None,
+                 fr_failed_hook: Optional[Callable] = None):
         self.task_queue = task_queue
         self.runners = runners  # role → AgentRunner instance
         self.context = context  # passthrough fields for RunContext
         self._log_path_fn = log_path_fn
         self._emit = emit
+        self._hl_done_hook = hl_done_hook
+        self._fr_failed_hook = fr_failed_hook
         self._fi_lock = asyncio.Lock()
         self._running: dict[int, tuple[asyncio.Task, CancelToken, str]] = {}
         self._finished_events: dict[int, asyncio.Event] = {}
@@ -71,6 +75,33 @@ class AgentRunManager:
             "run_id": run.id, "role": role, "target_id": target_id, "mode": mode,
         })
         return run.id
+
+    async def chat(self, origin_run_id: int, message: str) -> int:
+        """Continue an existing run with a user message via --resume."""
+        origin = await self.task_queue.get_agent_run(origin_run_id)
+        if not origin:
+            raise ValueError(f"Run {origin_run_id} not found")
+        run_id = await self.submit(
+            role=origin.role, target_kind=origin.target_kind,
+            target_id=origin.target_id, mode="manual",
+            resume=True, user_message=message,
+            resumed_from_run_id=origin_run_id,
+        )
+        await self.task_queue.add_run_message(run_id, "user", message)
+        evt = self._finished_events.get(run_id)
+        if evt:
+            asyncio.create_task(self._record_assistant_reply(run_id, evt))
+        return run_id
+
+    async def _record_assistant_reply(self, run_id: int,
+                                       evt: asyncio.Event) -> None:
+        await evt.wait()
+        run = await self.task_queue.get_agent_run(run_id)
+        if run and run.result_snapshot:
+            reply = (run.result_snapshot.get("reply")
+                     or run.result_snapshot.get("notes") or "")
+            if reply:
+                await self.task_queue.add_run_message(run_id, "assistant", reply)
 
     async def _drive(self, run_id: int, ctx: RunContext,
                      cancel: CancelToken, evt: asyncio.Event) -> None:
@@ -124,15 +155,31 @@ class AgentRunManager:
                     "target_kind": ctx.target_kind, "target_id": ctx.target_id,
                     "reason": result.error_message,
                 })
+                # FR-specific sibling cascade
+                if ctx.role == "fr" and self._fr_failed_hook:
+                    await self._fr_failed_hook(ctx.target_id, run_id,
+                                                result.error_message)
         # 'cancelled' → no state changes
 
     async def _apply_success(self, ctx: RunContext, result: RunResult) -> None:
-        """Hook for state machine advancement.
+        if ctx.mode != "auto":
+            return  # manual: don't touch state machine
 
-        Filled in Task 3.3 (per-role behavior). For now stubbed; tests only
-        verify the no-op path doesn't crash.
-        """
-        pass
+        snap = result.result_snapshot or {}
+        if ctx.role == "hl":
+            await self.task_queue.update_requirement_status(
+                ctx.target_id, "processed",
+            )
+            if self._hl_done_hook:
+                await self._hl_done_hook(ctx.target_id, snap)
+        elif ctx.role == "fr":
+            await self.task_queue.transition(
+                ctx.target_id, TaskStatus.IMPLEMENTED,
+            )
+        elif ctx.role == "fi":
+            await self.task_queue.transition(
+                ctx.target_id, TaskStatus.REVIEW,
+            )
 
     async def wait_for_finish(self, run_id: int) -> None:
         evt = self._finished_events.get(run_id)
