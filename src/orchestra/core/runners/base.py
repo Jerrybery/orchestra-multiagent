@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
@@ -89,7 +89,17 @@ class AgentRunner(ABC):
             add_dirs=add_dirs, extra_args=resume_args,
         )
         if resume_args and "--resume" in resume_args:
-            await asyncio.sleep(2)
+            # Probe for ~2s, but interrupt the wait if cancel fires.
+            try:
+                await asyncio.wait_for(cancel.wait(), timeout=2)
+                # cancel was set during the probe — kill the resume handle and bail
+                try:
+                    handle.process.kill()
+                except Exception:
+                    pass
+                return handle, False
+            except asyncio.TimeoutError:
+                pass  # probe completed normally; check returncode
             rc = handle.process.returncode
             if rc is not None and rc != 0:
                 log.warning("Resume failed (rc=%d), falling back to fresh", rc)
