@@ -162,17 +162,25 @@ class AgentRunManager:
         # 'cancelled' → no state changes
 
     async def _apply_success(self, ctx: RunContext, result: RunResult) -> None:
-        if ctx.mode != "auto":
-            return  # manual: don't touch state machine
-
         snap = result.result_snapshot or {}
         if ctx.role == "hl":
-            await self.task_queue.update_requirement_status(
-                ctx.target_id, "processed",
-            )
-            if self._hl_done_hook:
+            # Product data: persist new features regardless of mode
+            # (per design §5: manual HL success "更新 features").
+            # Hook impl is free to gate on proposal status (e.g. skip
+            # replace when proposal is already approved per §6 (c)).
+            if self._hl_done_hook and snap.get("features"):
                 await self._hl_done_hook(ctx.target_id, snap)
-        elif ctx.role == "fr":
+            # State machine: only auto-mode flips requirement.status
+            if ctx.mode == "auto":
+                await self.task_queue.update_requirement_status(
+                    ctx.target_id, "processed",
+                )
+            return
+
+        if ctx.mode != "auto":
+            return  # FR/FI manual: don't touch state machine
+
+        if ctx.role == "fr":
             await self.task_queue.transition(
                 ctx.target_id, TaskStatus.IMPLEMENTED,
             )
