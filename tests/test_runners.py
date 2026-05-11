@@ -77,3 +77,51 @@ async def test_fr_runner_success(tmp_path, monkeypatch):
     assert result.result_snapshot["head_commit"] == "abc123"
     assert result.result_snapshot["files_changed"] == ["a.py", "b.py"]
     assert result.result_snapshot["branch"] == "feat/feat-001"
+
+
+from orchestra.core.runners.fi import FIRunner
+
+
+@pytest.mark.asyncio
+async def test_fi_runner_clean_pass(tmp_path):
+    spawner = MagicMock()
+    handle = MagicMock(); handle.process.returncode = 0
+    spawner.spawn = AsyncMock(return_value=handle)
+    res = MagicMock()
+    res.stdout = 'ORCHESTRA_RESULT:{"recommendation":"approve"}\n'
+    res.stderr = ""; res.exit_code = 0; res.session_id = "sess-fi"
+    spawner.wait = AsyncMock(return_value=res)
+
+    class FakeServer:
+        async def start(self): pass
+        async def stop(self): pass
+
+    # head + status unchanged → no violation
+    async def head_fn(cwd): return "abc"
+    async def status_fn(cwd): return ""
+    async def reset_fn(cwd, h): pass
+    runner = FIRunner(
+        spawner=spawner,
+        task_loader=AsyncMock(return_value=MagicMock(id="feat-001", title="demo")),
+        prompt_loader=lambda t: "FI PROMPT {base_url} {dev_server_log_path}",
+        run_config_loader=AsyncMock(return_value=MagicMock(
+            command="echo", ready_signal="ok",
+            base_url="http://x", startup_timeout=1,
+        )),
+        dev_server_factory=lambda **kw: FakeServer(),
+        worktree_path_fn=lambda t: tmp_path / "wt",
+        dev_log_path_fn=lambda t: tmp_path / "dev.log",
+        head_fn=head_fn, status_fn=status_fn, reset_fn=reset_fn,
+        report_parser=lambda t: ([], []),  # critical / important
+    )
+    (tmp_path / "wt").mkdir()
+
+    ctx = RunContext(
+        role="fi", target_kind="task", target_id="feat-001",
+        mode="auto", resume_session_id=None, prev_run=None,
+        project_dir=tmp_path, orchestra_dir=tmp_path / ".o",
+        log_path=str(tmp_path / "fi.log"),
+    )
+    result = await runner.run(ctx, CancelToken())
+    assert result.status == "succeeded"
+    assert result.result_snapshot["recommendation"] == "approve"
