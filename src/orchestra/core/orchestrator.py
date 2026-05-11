@@ -23,6 +23,21 @@ log = logging.getLogger(__name__)
 RESULT_PATTERN = re.compile(r"ORCHESTRA_RESULT:({.*})")
 
 
+def _prompts_dir() -> Path:
+    """Resolve the prompts/ directory at the repo root.
+
+    Prompts live at the top of the repo for auditability — easier to spot
+    in `git log -- prompts/` than buried under src/. In a develop install
+    (`pip install -e .`), parents[3] resolves to the repo root.
+    """
+    candidate = Path(__file__).resolve().parents[3] / "prompts"
+    if not candidate.is_dir():
+        raise FileNotFoundError(
+            f"prompts/ not found at expected location: {candidate}"
+        )
+    return candidate
+
+
 def _parse_agent_result(output: str) -> Optional[dict]:
     """Extract ORCHESTRA_RESULT JSON from agent stdout."""
     for line in reversed(output.splitlines()):
@@ -549,7 +564,7 @@ class Orchestrator:
 
     def _load_prompt(self, role: AgentRole, task_id: Optional[str] = None) -> str:
         """Load prompt template and inject both paths and file contents."""
-        prompt_file = Path(__file__).parent.parent / "prompts" / f"{role.value}.md"
+        prompt_file = _prompts_dir() / f"{role.value}.md"
         template = prompt_file.read_text()
 
         if task_id:
