@@ -88,6 +88,24 @@ const TRUNK_X_OFFSET = 50;   // trunk line offset from idea right edge
 
 // ── Build Layout ────────────────────────────────────────────────
 
+// Canonicalize a branch ref name: strip remotes/origin/ or origin/ prefix
+// so 'origin/prod' and local 'prod' end up on the same lane.
+function canonicalBranch(name) {
+  if (name.startsWith('remotes/origin/')) return name.slice(15);
+  if (name.startsWith('origin/')) return name.slice(7);
+  if (name.startsWith('remotes/')) return name.slice(8);
+  return name;
+}
+
+// First non-empty canonical branch key for a commit (local wins over remote).
+function commitBranchKey(c) {
+  if (c.branches && c.branches.length) return c.branches[0];
+  if (c.remote_branches && c.remote_branches.length) {
+    return canonicalBranch(c.remote_branches[0]);
+  }
+  return null;
+}
+
 function buildLayout() {
   const { commits, nodes, edges, proposals } = graphData;
 
@@ -100,10 +118,16 @@ function buildLayout() {
   let colorIdx = 0;
   let laneIdx = 0;
 
-  // First pass: collect all branch names, assign main/master to lane 0
+  // First pass: collect every branch (local + remote, canonicalized so
+  // 'origin/prod' and local 'prod' share a lane). Without this, branches
+  // that exist only on origin (typical for prod/qd/dev when you've only
+  // checked out one of them) would collapse to lane 0.
   const allBranches = new Set();
   for (const c of commits) {
-    for (const br of c.branches) allBranches.add(br);
+    for (const br of (c.branches || [])) allBranches.add(br);
+    for (const br of (c.remote_branches || [])) {
+      allBranches.add(canonicalBranch(br));
+    }
   }
   // Assign main/master first
   for (const br of ['main', 'master']) {
@@ -132,16 +156,18 @@ function buildLayout() {
     return COMMIT_X_BASE + lane * LANE_WIDTH;
   }
 
-  // Build a map from commit hash to its branch (for lane assignment)
-  // Strategy: assign each commit to the lane of its first branch ref,
-  // or inherit from its child commit if no branch ref
+  // Build a map from commit hash to its branch (for lane assignment).
+  // Strategy: assign each commit to the lane of its first branch ref
+  // (local preferred over remote, both checked); commits without any
+  // direct ref inherit from their child via propagation below.
   const commitsReversed = [...commits].reverse();
   const commitLaneAssignment = {};
 
-  // First: assign commits that have branch refs
+  // First: assign commits that have any branch ref (local or remote)
   for (const c of commitsReversed) {
-    if (c.branches.length) {
-      commitLaneAssignment[c.hash] = branchLaneMap[c.branches[0]] ?? 0;
+    const key = commitBranchKey(c);
+    if (key !== null) {
+      commitLaneAssignment[c.hash] = branchLaneMap[key] ?? 0;
     }
   }
 
@@ -166,7 +192,8 @@ function buildLayout() {
     const y = PAD_TOP + i * COMMIT_Y_STEP;
     const lane = commitLaneAssignment[c.hash] ?? 0;
     const x = laneX(lane);
-    const color = c.branches.length ? branchColorMap[c.branches[0]] : defaultCommitColor;
+    const key = commitBranchKey(c);
+    const color = key !== null ? (branchColorMap[key] || defaultCommitColor) : defaultCommitColor;
     const isMerge = (c.parents || []).length > 1;
     commitPositions.push({ ...c, x, y, color, lane, isMerge });
     positions[`commit:${c.hash}`] = { x, y, type: 'commit', color, data: c, lane, isMerge };
