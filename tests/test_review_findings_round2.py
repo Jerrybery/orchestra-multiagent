@@ -1,10 +1,11 @@
-"""Task 5.3 — round-2 FI prompt injection of prior critical findings.
+"""Round-2 FI prompt injection of prior critical findings.
 
 Round 1 FI rejects with one critical issue. The task is walked back to
-IMPLEMENTED, FI runs again, and we capture the spawn's task_prompt to confirm
-`_render_previous_findings` (Task 5.2) actually wired into the round-2 prompt.
+IMPLEMENTED, FI runs again with `resumed_from_run_id` pointing at round 1,
+and we capture the spawn's task_prompt to confirm prev_run findings are
+wired into the round-2 prompt.
 
-Pure integration test — no production change. This is the wire-up sentinel.
+Migrated to drive runs through `AgentRunManager` rather than `_run_fi`.
 """
 
 import pytest
@@ -35,20 +36,25 @@ async def test_round2_prompt_contains_previous_findings(
              "result": "ORCHESTRA_RESULT:{\"recommendation\":\"reject\",\"issues\":1,\"critical\":1}",
              "is_error": False, "duration_ms": 50, "num_turns": 1},
         ])
-        await orch._run_fi(task)
+        rid1 = await orch.manager.submit(
+            role="fi", target_kind="task", target_id=task.id, mode="auto",
+        )
+        await orch.manager.wait_for_finish(rid1)
 
-        # Sanity: round 1 finding persisted with the critical bullet parsed.
-        f1 = await orch.task_queue.get_latest_review_finding(task.id)
-        assert f1 is not None
-        assert f1["round"] == 1
-        assert f1["recommendation"] == "reject"
+        # Sanity: round 1 snapshot has the critical bullet parsed.
+        run1 = await orch.task_queue.get_agent_run(rid1)
+        assert run1 is not None
+        assert run1.status == "succeeded"
+        assert run1.result_snapshot["recommendation"] == "reject"
         assert any(
-            it.get("desc") == "null deref in fooBar" for it in f1["critical"]
-        ), f"round-1 critical not parsed from report: {f1['critical']!r}"
+            it.get("desc") == "null deref in fooBar"
+            for it in run1.result_snapshot["critical"]
+        ), (
+            f"round-1 critical not parsed from report: "
+            f"{run1.result_snapshot['critical']!r}"
+        )
 
         # ── Walk back to IMPLEMENTED for round 2 ──────────────────────
-        # _run_fi left the task in REVIEW. State machine path:
-        # REVIEW → REJECTED → ASSIGNED → IN_PROGRESS → IMPLEMENTED.
         await orch.task_queue.transition(
             task.id, TaskStatus.REJECTED, reject_reason="see report"
         )
@@ -66,18 +72,20 @@ async def test_round2_prompt_contains_previous_findings(
 
         orch.spawner.spawn = capture_spawn
 
-        # Round 2 FI: accept this time. Report is rewritten by FI in real
-        # life; for the test we just leave the round-1 file in place so the
-        # parsed round-2 critical is non-empty too — but what we care about
-        # is the *prompt* injection, not the resulting findings.
         fake_claude_env([
             {"type": "system", "model": "sonnet", "session_id": "fi-r2"},
             {"type": "result",
              "result": "ORCHESTRA_RESULT:{\"recommendation\":\"accept\"}",
              "is_error": False, "duration_ms": 50, "num_turns": 1},
         ])
-        task2 = await orch.task_queue.get_task(task.id)
-        await orch._run_fi(task2)
+        # Round-2 run — `add_agent_run` auto-resolves previous_run_id from
+        # the most recent succeeded run for (role, target_id), so the
+        # Manager injects round-1's snapshot as prev_run for FIRunner to
+        # render in the prompt.
+        rid2 = await orch.manager.submit(
+            role="fi", target_kind="task", target_id=task.id, mode="auto",
+        )
+        await orch.manager.wait_for_finish(rid2)
 
         # ── Assert: round-2 prompt carries the round-1 critical ──────
         assert captured_prompts, "FI spawn was never called in round 2"

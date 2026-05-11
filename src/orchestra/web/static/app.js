@@ -710,6 +710,25 @@ async function onNodeClick(node) {
     </dl>
   </div>`;
 
+  // Auto-pause badge + manual rerun buttons
+  const isPaused = autoPauseState[`task:${task.id}`];
+  const pauseBadge = isPaused
+    ? `<div class="auto-pause-badge">
+         ⚠ Auto-paused: ${esc(isPaused)}
+         <button class="btn btn-compact" onclick="removeAutoPause('task','${esc(task.id)}')">解除</button>
+       </div>`
+    : '';
+  const runButtons = `
+    <div class="manual-run-buttons">
+      <button class="btn btn-compact" onclick="triggerRun('fr','${esc(task.id)}', this)">重跑 FR</button>
+      <button class="btn btn-compact" onclick="triggerRun('fi','${esc(task.id)}', this)">重跑 FI</button>
+    </div>`;
+  html += `<div class="detail-section">${pauseBadge}${runButtons}</div>`;
+
+  // Runs history panel for this task
+  const runsHtml = await renderRunsPanel(task.id);
+  html += `<div class="detail-section">${runsHtml}</div>`;
+
   // Branch management — always visible when branch exists
   if (task.branch) {
     html += `<div class="detail-section branch-mgmt">
@@ -801,8 +820,26 @@ async function renderProposalReview(proposalId) {
     ? `<span class="badge-paused">已暂停</span>`
     : '';
 
+  // Auto-pause badge for this requirement
+  const reqAutoPause = autoPauseState[`requirement:${prop.requirement_id}`];
+  const reqPauseBadge = reqAutoPause
+    ? `<div class="auto-pause-badge">
+         ⚠ Auto-paused: ${esc(reqAutoPause)}
+         <button class="btn btn-compact" onclick="removeAutoPause('requirement','${esc(prop.requirement_id)}')">解除</button>
+       </div>`
+    : '';
+
+  // Manual HL rerun + chat buttons (operate on the requirement, not the proposal)
+  const hlButtons = `
+    <div class="manual-run-buttons">
+      <button class="btn btn-compact" onclick="triggerRun('hl','${esc(prop.requirement_id)}', this)">重跑 HL</button>
+      <button class="btn btn-compact" onclick="openHLChat('${esc(prop.requirement_id)}')">和 HL 聊</button>
+    </div>`;
+
   let html = `<div class="detail-section proposal-review">
     <h3>Proposal Review: ${esc(proposalId)} ${pausedBadge}</h3>
+    ${reqPauseBadge}
+    ${hlButtons}
     <p style="color:var(--text-dim);margin-bottom:12px">
       Head Leader produced ${prop.features.length} features. Review and approve/reject before they enter the pipeline.
     </p>
@@ -831,6 +868,10 @@ async function renderProposalReview(proposalId) {
       <button class="btn btn-reject" onclick="abandonIdea('${proposalId}')">Abandon Idea</button>
     </div>
   </div>`;
+
+  // HL runs history for this requirement
+  const runsHtml = await renderRunsPanel(prop.requirement_id, 'hl');
+  html += `<div class="detail-section">${runsHtml}</div>`;
 
   return html;
 }
@@ -1145,12 +1186,202 @@ function switchTab(tabName) {
   document.querySelectorAll('.log-tab-content').forEach(c => c.classList.toggle('active', c.id === `tab-${tabName}`));
 }
 
+// ── Manual runs / auto-pauses / runs panel / HL chat ────────────
+
+let autoPauseState = {};  // {target_kind:target_id} → reason
+
+async function refreshAutoPauses() {
+  try {
+    const res = await fetch('/api/auto-pauses');
+    const list = await res.json();
+    autoPauseState = {};
+    for (const p of list) {
+      autoPauseState[`${p.target_kind}:${p.target_id}`] = p.reason || '(no reason)';
+    }
+  } catch (e) {
+    // best-effort; leave existing state
+  }
+}
+
+async function triggerRun(role, targetId, btnEl) {
+  const originalLabel = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '提交中…'; }
+  try {
+    const res = await fetch('/api/runs', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({role, target_id: targetId, mode: 'manual'}),
+    });
+    const data = await res.json();
+    addLogEntry('manual_run', `${role.toUpperCase()} run ${data.run_id} 已提交`);
+  } catch (e) {
+    addLogEntry('manual_run', '提交失败: ' + e.message);
+  } finally {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalLabel || ('重跑 ' + role.toUpperCase()); }
+  }
+}
+
+async function removeAutoPause(kind, id) {
+  await fetch(`/api/auto-pauses/${kind}/${id}`, {method: 'DELETE'});
+  await fetchGraph();
+}
+
+async function renderRunsPanel(targetId, role = null) {
+  const url = role
+    ? `/api/runs?target_id=${encodeURIComponent(targetId)}&role=${role}&limit=20`
+    : `/api/runs?target_id=${encodeURIComponent(targetId)}&limit=20`;
+  let runs = [];
+  try {
+    const res = await fetch(url);
+    runs = await res.json();
+  } catch (e) {
+    return `<div class="runs-panel"><h3>Runs 历史</h3><div class="empty">(load failed: ${esc(e.message)})</div></div>`;
+  }
+
+  const visibleCount = 5;
+  let html = '<div class="runs-panel"><h3>Runs 历史</h3>';
+  if (!runs.length) {
+    html += '<div class="empty">(no runs yet)</div></div>';
+    return html;
+  }
+  const visible = runs.slice(0, visibleCount);
+  const hidden = runs.slice(visibleCount);
+  html += '<ul class="runs-list">';
+  for (const r of visible) html += renderRunRow(r);
+  html += '</ul>';
+  if (hidden.length) {
+    html += `<button class="btn btn-compact" onclick="loadMoreRuns('${esc(targetId)}','${esc(role || '')}', this)">
+      Load more (${hidden.length})</button>`;
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderRunRow(r) {
+  const finishedAt = r.finished_at
+    ? new Date(r.finished_at * 1000).toLocaleString()
+    : '(running)';
+  const statusColor = {
+    succeeded: '#3fb950', failed: '#f85149',
+    running: '#d29922', cancelled: '#8b949e',
+  }[r.status] || '#8b949e';
+  return `<li class="run-row" onclick="openRunDetail(${r.id})">
+    <span class="run-role">${esc(r.role.toUpperCase())}</span>
+    <span class="run-mode">${esc(r.mode)}</span>
+    <span class="run-status" style="color:${statusColor}">${esc(r.status)}</span>
+    <span class="run-time">${esc(finishedAt)}</span>
+  </li>`;
+}
+
+async function loadMoreRuns(targetId, role, btnEl) {
+  const url = role
+    ? `/api/runs?target_id=${encodeURIComponent(targetId)}&role=${role}&limit=100`
+    : `/api/runs?target_id=${encodeURIComponent(targetId)}&limit=100`;
+  const res = await fetch(url);
+  const runs = await res.json();
+  const panel = btnEl.closest('.runs-panel');
+  const list = panel.querySelector('.runs-list');
+  list.innerHTML = runs.map(renderRunRow).join('');
+  btnEl.remove();
+}
+
+async function openRunDetail(runId) {
+  const res = await fetch(`/api/runs/${runId}`);
+  const run = await res.json();
+  const snap = run.result_snapshot
+    ? JSON.stringify(run.result_snapshot, null, 2) : '(no snapshot)';
+  const msgs = (run.messages || []).map(m =>
+    `<div class="chat-msg chat-${esc(m.role)}"><b>${esc(m.role)}:</b> ${esc(m.content)}</div>`
+  ).join('');
+  const html = `
+    <div class="run-detail-modal" onclick="if(event.target===this)this.remove()">
+      <div class="run-detail-card">
+        <h2>Run #${esc(String(run.id))} — ${esc(run.role.toUpperCase())} on ${esc(run.target_id)}</h2>
+        <div>Status: ${esc(run.status)} (${esc(run.mode)})</div>
+        <div>Session: ${esc(run.session_id || '(none)')}</div>
+        ${run.error_message ? `<div class="error">${esc(run.error_message)}</div>` : ''}
+        <h3>Snapshot</h3>
+        <pre>${esc(snap)}</pre>
+        ${msgs ? `<h3>Messages</h3><div class="chat-list">${msgs}</div>` : ''}
+        ${run.status === 'running'
+          ? `<button class="btn" onclick="cancelRun(${run.id})">取消</button>`
+          : ''}
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+async function cancelRun(runId) {
+  await fetch(`/api/runs/${runId}/cancel`, {method: 'POST'});
+}
+
+async function openHLChat(requirementId) {
+  const res = await fetch(`/api/runs?target_id=${encodeURIComponent(requirementId)}&role=hl&limit=1`);
+  const runs = await res.json();
+  if (!runs.length) {
+    alert('该 requirement 还没跑过 HL,先跑一次再 chat');
+    return;
+  }
+  const originRun = runs[0];
+  const detailRes = await fetch(`/api/runs/${originRun.id}`);
+  const detail = await detailRes.json();
+
+  const drawer = document.getElementById('chat-drawer');
+  if (!drawer) {
+    alert('chat-drawer element missing');
+    return;
+  }
+  drawer.classList.remove('hidden');
+  drawer.innerHTML = `
+    <div class="chat-drawer-header">
+      <h2>和 HL 聊 — ${esc(requirementId)}</h2>
+      <button onclick="closeChatDrawer()">×</button>
+    </div>
+    <div class="chat-features-preview">
+      <h3>当前拆分</h3>
+      <pre>${esc(JSON.stringify(detail.result_snapshot?.features || [], null, 2))}</pre>
+    </div>
+    <div class="chat-messages" id="chat-msgs">
+      ${(detail.messages || []).map(m =>
+        `<div class="chat-msg chat-${esc(m.role)}"><b>${esc(m.role)}:</b> ${esc(m.content)}</div>`
+      ).join('')}
+    </div>
+    <div class="chat-input-row">
+      <textarea id="chat-input" rows="3" placeholder="给 HL 留言"></textarea>
+      <button class="btn" onclick="sendChat(${originRun.id})">发送</button>
+    </div>`;
+}
+
+async function sendChat(originRunId) {
+  const ta = document.getElementById('chat-input');
+  const text = ta.value.trim();
+  if (!text) return;
+  ta.value = '';
+  const msgsEl = document.getElementById('chat-msgs');
+  msgsEl.insertAdjacentHTML('beforeend',
+    `<div class="chat-msg chat-user"><b>user:</b> ${esc(text)}</div>`);
+  const res = await fetch(`/api/runs/${originRunId}/chat`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({message: text, wait: true}),
+  });
+  const data = await res.json();
+  const reply = data.result_snapshot?.reply
+              || data.result_snapshot?.notes
+              || JSON.stringify(data.result_snapshot);
+  msgsEl.insertAdjacentHTML('beforeend',
+    `<div class="chat-msg chat-assistant"><b>assistant:</b> ${esc(reply)}</div>`);
+}
+
+function closeChatDrawer() {
+  const drawer = document.getElementById('chat-drawer');
+  if (drawer) drawer.classList.add('hidden');
+}
+
 // ── SSE Event stream ────────────────────────────────────────────
 
 function connectSSE() {
   const evtSource = new EventSource('/api/events/stream');
 
-  evtSource.addEventListener('orchestra', (e) => {
+  evtSource.addEventListener('orchestra', async (e) => {
     const { event, data } = JSON.parse(e.data);
 
     if (event === 'agent_log') {
@@ -1165,6 +1396,11 @@ function connectSSE() {
          ].includes(event)) {
       fetchGraph();
       fetchAgents();
+    }
+
+    if (['run_created','run_finished','auto_pause_added','auto_pause_removed'].includes(event)) {
+      await refreshAutoPauses();
+      await fetchGraph();
     }
 
     if (['discussion_discovered','discussion_commented','discussion_ready','discussion_status_changed',
@@ -1397,6 +1633,7 @@ function showDashboard(projectPath) {
 
 function startDashboard() {
   initTooltip();
+  refreshAutoPauses();
   fetchGraph();
   fetchAgents();
   fetchTrackingStatus();
@@ -1405,6 +1642,7 @@ function startDashboard() {
   setInterval(fetchAgents, 5000);
   setInterval(fetchGraph, 10000);
   setInterval(fetchDrafts, 10000);
+  setInterval(refreshAutoPauses, 30000);
   setInterval(() => {
     const active = document.querySelector('.side-tab.active[data-side-tab]');
     if (!active) return;

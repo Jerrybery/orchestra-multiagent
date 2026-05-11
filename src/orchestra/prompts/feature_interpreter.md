@@ -134,6 +134,10 @@ ACCEPT / REJECT
 If REJECT: list the specific issues that must be fixed.
 ```
 
+## Chat / Continuation Context
+
+{chat_context_block}
+
 ## Output
 
 After writing the report, output:
