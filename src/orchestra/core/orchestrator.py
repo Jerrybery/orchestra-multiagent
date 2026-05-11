@@ -154,20 +154,10 @@ class Orchestrator:
             max_turns=config.max_turns,
             model=config.model,
             on_output=self._on_agent_output,
-            on_session_id=self._on_session_id,
         )
-        self._running_tasks: dict[str, AgentHandle] = {}  # task_id -> handle
         self._on_event: Optional[Callable[[str, dict], Awaitable[None]]] = None
-        self._stop = False
         self.tracker: Optional[IssueTracker] = None
         self._tracker_task: Optional[asyncio.Task] = None
-        # Serializes FI runs: only one Feature Interpreter is active at a time
-        # (the dev server it spawns binds the project port).
-        self._fi_lock = asyncio.Lock()
-        # Strong references to fire-and-forget background tasks so they aren't
-        # garbage-collected mid-run, plus a done_callback to surface unhandled
-        # exceptions instead of letting them silently die.
-        self._background_tasks: set[asyncio.Task] = set()
 
         # NEW (Task 3.3): wire up runners + manager + auto driver
         from orchestra.core.runners.hl import HLRunner
@@ -196,8 +186,10 @@ class Orchestrator:
                 AgentRole.FEATURE_INTERPRETER, tid),
             run_config_loader=self.context.get_run_config,
             dev_server_factory=DevServer,
-            worktree_path_fn=self.context.get_worktree_path,
-            dev_log_path_fn=self.context.get_dev_server_log_path,
+            # Late-binding lambdas so tests can monkeypatch
+            # `orch.context.get_worktree_path` after construction.
+            worktree_path_fn=lambda tid: self.context.get_worktree_path(tid),
+            dev_log_path_fn=lambda tid: self.context.get_dev_server_log_path(tid),
             head_fn=_git_rev_parse_head,
             status_fn=_git_status_porcelain,
             reset_fn=_git_reset_to,
@@ -217,18 +209,6 @@ class Orchestrator:
         self.auto_driver = AutoDriver(
             task_queue=self.task_queue, manager=self.manager, config=config,
         )
-
-    def _track_background_task(self, t: asyncio.Task) -> None:
-        self._background_tasks.add(t)
-        t.add_done_callback(self._on_background_task_done)
-
-    def _on_background_task_done(self, t: asyncio.Task) -> None:
-        self._background_tasks.discard(t)
-        if t.cancelled():
-            return
-        exc = t.exception()
-        if exc:
-            log.exception("Background task crashed", exc_info=exc)
 
     async def init(self) -> None:
         """Initialize all subsystems."""
@@ -307,19 +287,6 @@ class Orchestrator:
             "stream": stream,
             "line": stripped[:500],  # truncate very long lines
         })
-
-    async def _on_session_id(self, agent_id: str, sid: str) -> None:
-        """Persist session_id when AgentSpawner emits one for an FR run.
-
-        Reverse-looks up which task this agent_id is running for, and only
-        persists when the role is FEATURE_REALIZER (FI/HL/DA session_ids
-        are not tracked on the task table).
-        """
-        for task_id, handle in self._running_tasks.items():
-            if (handle.agent_id == agent_id
-                    and handle.role == AgentRole.FEATURE_REALIZER):
-                await self.task_queue.set_fr_session_id(task_id, sid)
-                return
 
     async def _emit(self, event: str, data: dict) -> None:
         log.info("Event: %s %s", event, json.dumps(data, default=str))
@@ -679,23 +646,21 @@ class Orchestrator:
         return int(m.group(1)) if m else None
 
     async def submit_requirement(self, requirement: str) -> str:
-        """Send a requirement to a Head Leader. Returns proposal_id for human review."""
+        """Create a requirement and trigger an auto HL run via AgentRunManager.
+
+        Returns the requirement_id. The proposal will be created
+        asynchronously by _on_hl_done when HL succeeds.
+        """
         import hashlib
         import time as _time
         unique = f"{requirement}:{_time.time()}"
         req_id = "req-" + hashlib.sha256(unique.encode()).hexdigest()[:8]
         await self.task_queue.add_requirement(req_id, requirement)
 
-        # Use source issue if present, otherwise create a new idea issue
         source_issue = self._extract_source_issue(requirement)
         title = self._extract_title(requirement)
-
-        idea_issue_num = 0
-        if source_issue:
-            # Requirement came from an existing issue — link to it, don't create a new one
-            idea_issue_num = source_issue
-            log.info("Requirement linked to existing issue #%d", source_issue)
-        else:
+        idea_issue_num = source_issue or 0
+        if not source_issue:
             idea_issue = await self.github.create_idea_issue(
                 title=title,
                 body=f"## Idea\n\n{requirement}\n\n---\n*Created by Orchestra*",
@@ -706,43 +671,11 @@ class Orchestrator:
             "requirement": requirement[:200],
             "issue": idea_issue_num,
         })
-
-        system_prompt = self._load_prompt(AgentRole.HEAD_LEADER)
-        handle = await self.spawner.spawn(
-            role=AgentRole.HEAD_LEADER,
-            system_prompt=system_prompt,
-            task_prompt=requirement,
-            cwd=self.config.project_dir,
-            log_path=self.context.get_log_path("hl-latest"),
-            add_dirs=[self.context.orchestra_dir],
+        await self.manager.submit(
+            role="hl", target_kind="requirement",
+            target_id=req_id, mode="auto",
         )
-
-        result = await self.spawner.wait(handle)
-        parsed = _parse_agent_result(result.stdout)
-
-        if not parsed or "features" not in parsed:
-            await self._emit("hl_failed", {"error": "No structured output", "stderr": result.stderr[:500]})
-            log.error("HL failed to produce structured output.\nstdout: %s\nstderr: %s",
-                      result.stdout[-500:], result.stderr[-500:])
-            return ""
-
-        # Store as a proposal awaiting human review — NOT directly as tasks
-        proposal_id = f"prop-{req_id.split('-')[1]}"
-        summary = parsed.get("summary", requirement[:40])
-
-        # Attach idea issue number to each feature for later linking
-        for feat in parsed["features"]:
-            feat["_idea_issue"] = idea_issue_num
-
-        await self.task_queue.add_proposal(proposal_id, req_id, parsed["features"], summary=summary)
-
-        await self._emit("hl_done", {
-            "proposal_id": proposal_id,
-            "count": len(parsed["features"]),
-            "features": [f["id"] for f in parsed["features"]],
-            "issue": idea_issue_num,
-        })
-        return proposal_id
+        return req_id
 
     async def approve_proposal(self, proposal_id: str,
                                approved_feature_ids: list[str] | None = None) -> list[Task]:
@@ -810,152 +743,7 @@ class Orchestrator:
         await self.task_queue.update_proposal_status(proposal_id, "rejected")
         await self._emit("proposal_rejected", {"proposal_id": proposal_id})
 
-    # ── Feature Realizer ────────────────────────────────────────────
-
-    async def _run_fr(self, task: Task) -> None:
-        """Run a Feature Realizer for a single task.
-
-        On a re-run after rejection (reject_reason + fr_session_id present),
-        uses --resume with a minimal feedback-only prompt instead of rebuilding
-        the full system+spec prompt. If the resume itself fails fast (process
-        exits non-zero within ~2s, e.g. session not found), falls back to a
-        fresh run with the full prompt and no --resume flag.
-        """
-        wt_path = await self.worktree.create_worktree(
-            task.id, title=task.title, source_issue=task.source_issue,
-        )
-        branch = self.worktree.get_branch_name(task.id)
-
-        await self.task_queue.transition(
-            task.id, TaskStatus.IN_PROGRESS,
-            worktree_path=str(wt_path),
-            branch=branch,
-        )
-        await self._emit("fr_start", {"task_id": task.id, "title": task.title})
-
-        use_resume = (
-            task.reject_reason is not None
-            and task.fr_session_id is not None
-        )
-
-        if use_resume:
-            # Minimal prompt: just the reviewer feedback. The agent already has
-            # full project context via the resumed session. System prompt is
-            # not needed (and would be ignored on --resume anyway).
-            task_prompt = (
-                f"This implementation was rejected. Address the following feedback:\n\n"
-                f"{task.reject_reason}\n\n"
-                f"Make the changes and report back when done."
-            )
-            system_prompt = ""
-            extra_args = ["--resume", task.fr_session_id]
-        else:
-            system_prompt = self._load_prompt(AgentRole.FEATURE_REALIZER, task.id)
-            task_prompt = (
-                f"Implement feature {task.id}: {task.title}\n\n"
-                f"The full spec, architecture, conventions, and API contracts are in "
-                f"the system prompt above. Start implementing."
-            )
-            if task.reject_reason:
-                task_prompt += (
-                    f"\n\n## Previous Review Feedback\n"
-                    f"This feature was previously rejected. Reason:\n{task.reject_reason}\n\n"
-                    f"Please address this feedback."
-                )
-            extra_args = []
-
-        handle = await self._spawn_fr_with_resume_fallback(
-            task=task,
-            wt_path=wt_path,
-            system_prompt=system_prompt,
-            task_prompt=task_prompt,
-            extra_args=extra_args,
-        )
-        self._running_tasks[task.id] = handle
-        try:
-            result = await self.spawner.wait(handle)
-        finally:
-            self._running_tasks.pop(task.id, None)
-
-        parsed = _parse_agent_result(result.stdout)
-
-        if parsed and parsed.get("status") == "blocked":
-            reason = parsed.get("reason", "Unknown blocker")
-            log.error("FR blocked for %s: %s", task.id, reason)
-            await self._handle_fr_failure(task, reason)
-        elif result.exit_code == 0:
-            # Success — even if no structured output, exit 0 means it completed
-            await self.task_queue.transition(task.id, TaskStatus.IMPLEMENTED)
-            notes = parsed.get("notes", "") if parsed else "no structured output"
-            # Do NOT auto-push. User decides at review time whether to push
-            # and whether to create a PR.
-            await self._emit("fr_done", {"task_id": task.id, "notes": notes})
-            log.info("FR completed %s (structured=%s)", task.id, parsed is not None)
-        else:
-            reason = f"Exit code {result.exit_code}"
-            if parsed:
-                reason = parsed.get("reason", reason)
-            log.error("FR failed for %s: %s", task.id, reason)
-            await self._handle_fr_failure(task, reason)
-
-    async def _spawn_fr_with_resume_fallback(
-        self,
-        *,
-        task: Task,
-        wt_path: Path,
-        system_prompt: str,
-        task_prompt: str,
-        extra_args: list[str],
-    ) -> AgentHandle:
-        """Spawn an FR; if --resume was requested but the process dies fast,
-        clear fr_session_id and respawn fresh with the full prompt.
-
-        The 2s probe is a race window: claude returns very quickly if the
-        session is missing/expired (typically <500ms), but legitimate runs
-        won't have exited within 2s. Only resume invocations are probed —
-        fresh spawns return immediately.
-        """
-        handle = await self.spawner.spawn(
-            role=AgentRole.FEATURE_REALIZER,
-            system_prompt=system_prompt,
-            task_prompt=task_prompt,
-            cwd=wt_path,
-            task_id=task.id,
-            log_path=self.context.get_log_path(f"fr-{task.id}"),
-            add_dirs=[wt_path, self.context.orchestra_dir],
-            extra_args=extra_args,
-        )
-        if extra_args and "--resume" in extra_args:
-            await asyncio.sleep(2)
-            rc = handle.process.returncode
-            if rc is not None and rc != 0:
-                log.warning(
-                    "Resume failed for %s (rc=%d), falling back to fresh session",
-                    task.id, rc,
-                )
-                await self._emit("fr_resume_fallback", {
-                    "task_id": task.id, "exit_code": rc,
-                })
-                # Drop the stale session id so future re-runs don't keep retrying.
-                await self.task_queue.set_fr_session_id(task.id, None)
-                # task.reject_reason is guaranteed non-None here: this branch is
-                # only reachable when use_resume=True, which requires it.
-                full_system = self._load_prompt(AgentRole.FEATURE_REALIZER, task.id)
-                full_task = (
-                    f"Implement feature {task.id}: {task.title}\n\n"
-                    f"The full spec is in the system prompt above. "
-                    f"Previously rejected: {task.reject_reason}"
-                )
-                handle = await self.spawner.spawn(
-                    role=AgentRole.FEATURE_REALIZER,
-                    system_prompt=full_system,
-                    task_prompt=full_task,
-                    cwd=wt_path,
-                    task_id=task.id,
-                    log_path=self.context.get_log_path(f"fr-{task.id}"),
-                    add_dirs=[wt_path, self.context.orchestra_dir],
-                )
-        return handle
+    # ── Helpers shared by retry/cascade ─────────────────────────────
 
     async def _proposal_id_for_task(self, task_id: str) -> Optional[str]:
         """Return the proposal id whose features contain `task_id`, or None."""
@@ -967,35 +755,6 @@ class Orchestrator:
                 if any(f.get("id") == task_id for f in features):
                     return row["id"]
         return None
-
-    async def _handle_fr_failure(self, task: Task, reason: str) -> None:
-        """Cascade an FR failure: mark task FAILED, freeze unstarted siblings,
-        pause the parent proposal. In-progress siblings are left alone so they
-        can complete naturally."""
-        await self.task_queue.transition(
-            task.id, TaskStatus.FAILED, fail_reason=reason,
-        )
-        await self._emit("fr_failed", {"task_id": task.id, "reason": reason})
-
-        proposal_id = await self._proposal_id_for_task(task.id)
-        if not proposal_id:
-            log.warning("Could not find proposal for failed task %s", task.id)
-            return
-
-        siblings = await self.task_queue.get_tasks_for_proposal(proposal_id)
-        for s in siblings:
-            if s.id != task.id and s.status in {TaskStatus.IDEA, TaskStatus.ASSIGNED}:
-                await self.task_queue.transition(
-                    s.id, TaskStatus.FAILED,
-                    fail_reason=f"Cancelled: sibling {task.id} failed",
-                )
-
-        await self.task_queue.update_proposal_status(proposal_id, "paused")
-        await self._emit("proposal_paused", {
-            "proposal_id": proposal_id,
-            "failed_task": task.id,
-            "reason": reason,
-        })
 
     async def retry_failed_task(self, task_id: str) -> None:
         """Retry a FAILED task: move it back to ASSIGNED, clear fail_reason,
@@ -1018,161 +777,7 @@ class Orchestrator:
                 await self.task_queue.update_proposal_status(proposal_id, "approved")
                 await self._emit("proposal_resumed", {"proposal_id": proposal_id})
 
-    # ── Feature Interpreter ─────────────────────────────────────────
-
-    async def _run_fi(self, task: Task) -> None:
-        """Run a Feature Interpreter for a single task.
-
-        Wrapped in `self._fi_lock` so only one FI runs at a time (the dev
-        server it spawns binds the project port). The actual body lives in
-        `_run_fi_inner`.
-        """
-        async with self._fi_lock:
-            await self._run_fi_inner(task)
-
-    async def _run_fi_inner(self, task: Task) -> None:
-        """FI body: dev server lifecycle, findings injection, violation detection."""
-        await self.task_queue.transition(task.id, TaskStatus.TESTING)
-        await self._emit("fi_start", {"task_id": task.id})
-
-        # Inject CLAUDE.md into the worktree so FI has review guidelines
-        wt_path = self.context.get_worktree_path(task.id)
-        fi_claude_md = Path(__file__).parent.parent / "fi_workspace_claude.md"
-        if fi_claude_md.exists():
-            target = wt_path / "CLAUDE.md"
-            # Only write if not already present (don't overwrite project's own CLAUDE.md)
-            if not target.exists():
-                target.write_text(fi_claude_md.read_text())
-
-        run_cfg = await self.context.get_run_config()
-        if not run_cfg:
-            await self._handle_fr_failure(task, "RunConfig missing — re-run setup wizard")
-            return
-
-        # Spawn the dev server. Local import avoids a hard module-load
-        # dependency chain at orchestrator import time.
-        from orchestra.core.dev_server import DevServer, DevServerStartupError
-        dev_log = self.context.get_dev_server_log_path(task.id)
-        server = DevServer(
-            cwd=wt_path,
-            command=run_cfg.command,
-            ready_signal=run_cfg.ready_signal,
-            base_url=run_cfg.base_url,
-            timeout=run_cfg.startup_timeout,
-            log_path=dev_log,
-        )
-        try:
-            await server.start()
-        except DevServerStartupError as e:
-            log.error("dev server failed for %s: %s", task.id, e)
-            await self._handle_fr_failure(task, f"dev server failed to start: {e}")
-            return
-
-        # Snapshot AFTER server.start() so dev-server startup byproducts
-        # (.next/, next-env.d.ts, dist/, freshly populated node_modules/)
-        # are part of the baseline and won't read as FI-induced changes.
-        baseline_head = await _git_rev_parse_head(wt_path)
-        baseline_status = await _git_status_porcelain(wt_path)
-
-        current_head = baseline_head
-        current_status = baseline_status
-
-        try:
-            system_prompt = self._load_prompt(AgentRole.FEATURE_INTERPRETER, task.id)
-            system_prompt = system_prompt.replace("{base_url}", run_cfg.base_url)
-            system_prompt = system_prompt.replace("{dev_server_log_path}", str(dev_log))
-
-            prev_findings = await self.task_queue.get_latest_review_finding(task.id)
-            findings_block = (
-                self._render_previous_findings(prev_findings) if prev_findings else ""
-            )
-
-            task_prompt = (
-                f"Verify the implementation of feature {task.id}: {task.title}\n\n"
-                f"The dev server is running at {run_cfg.base_url}.\n"
-                f"Dev server log: {dev_log}\n\n"
-                f"Run `git diff --stat main..HEAD` and `git diff main..HEAD` to see the changes.\n"
-                f"Then follow Step 3a/3b/3c in the system prompt above.\n"
-                f"{findings_block}"
-            )
-
-            handle = await self.spawner.spawn(
-                role=AgentRole.FEATURE_INTERPRETER,
-                system_prompt=system_prompt,
-                task_prompt=task_prompt,
-                cwd=wt_path,
-                task_id=task.id,
-                log_path=self.context.get_log_path(f"fi-{task.id}"),
-                add_dirs=[wt_path, self.context.orchestra_dir],
-            )
-            self._running_tasks[task.id] = handle
-            try:
-                result = await self.spawner.wait(handle)
-            finally:
-                self._running_tasks.pop(task.id, None)
-            # Snapshot BEFORE server.stop() so dev-runtime artifacts written
-            # while the server was up are still visible — _filter_dev_artifacts
-            # below ignores the well-known ones, and any genuine FI mutation
-            # outside that denylist will surface as a real violation.
-            current_head = await _git_rev_parse_head(wt_path)
-            current_status = await _git_status_porcelain(wt_path)
-        finally:
-            await server.stop()
-
-        violated = (current_head != baseline_head) or (
-            _filter_dev_artifacts(current_status)
-            != _filter_dev_artifacts(baseline_status)
-        )
-
-        if violated:
-            await self._emit("fi_violation_modified_worktree", {
-                "task_id": task.id,
-                "new_head": current_head != baseline_head,
-                "dirty": (
-                    _filter_dev_artifacts(current_status)
-                    != _filter_dev_artifacts(baseline_status)
-                ),
-            })
-            await _git_reset_to(wt_path, baseline_head)
-            await self.task_queue.transition(task.id, TaskStatus.REVIEW)
-            await self.task_queue.transition(
-                task.id, TaskStatus.REJECTED,
-                reject_reason=(
-                    "FI modified the worktree, which is forbidden. "
-                    "Re-running with stricter constraint."
-                ),
-            )
-            await self._emit("fi_done", {
-                "task_id": task.id, "recommendation": "reject",
-            })
-            return
-
-        parsed = _parse_agent_result(result.stdout)
-        recommendation = parsed.get("recommendation", "unknown") if parsed else "unknown"
-        critical, important = self._parse_findings_from_report(task.id)
-
-        round_n = await self._next_review_round(task.id)
-        await self.task_queue.add_review_finding(
-            task_id=task.id,
-            round=round_n,
-            recommendation=recommendation,
-            critical=critical,
-            important=important,
-            report_path=str(self.context.get_report_path(task.id)),
-        )
-
-        await self.task_queue.transition(task.id, TaskStatus.REVIEW)
-        await self._emit("fi_done", {
-            "task_id": task.id,
-            "recommendation": recommendation,
-            "report": str(self.context.get_report_path(task.id)),
-        })
-
-        if self.config.auto_accept:
-            log.info("Auto-accepting %s (pass_whatever mode)", task.id)
-            await self.accept_task(task.id)
-
-    # ── FI helpers ──────────────────────────────────────────────────
+    # ── FI helpers (still used by Runner for findings parsing) ──────
 
     def _render_previous_findings(self, finding: dict) -> str:
         """Render a prior round's findings into a markdown block to append to
@@ -1391,50 +996,8 @@ class Orchestrator:
     # ── Main Loop ───────────────────────────────────────────────────
 
     async def run_loop(self) -> None:
-        """Main orchestration loop. Runs until stopped."""
-        self._stop = False
-        log.info("Orchestrator loop started")
-
-        while not self._stop:
-            try:
-                await self._tick()
-            except Exception:
-                log.exception("Error in orchestrator tick")
-
-            await asyncio.sleep(2)
-
-        log.info("Orchestrator loop stopped")
-
-    async def _tick(self) -> None:
-        """Single iteration of the orchestration loop."""
-        # 1. Promote IDEA → ASSIGNED where dependencies are satisfied
-        promoted = await self.task_queue.promote_ready_tasks()
-        for t in promoted:
-            await self._emit("task_promoted", {"task_id": t.id, "title": t.title})
-
-        # 2. Assign ASSIGNED tasks to available FRs
-        assigned = await self.task_queue.get_tasks(TaskStatus.ASSIGNED)
-        fr_running = self.spawner.running_count(AgentRole.FEATURE_REALIZER)
-        for task in assigned:
-            if fr_running >= self.config.max_fr:
-                break
-            if task.id in self._running_tasks:
-                continue
-            log.info("Dispatching FR for %s (%s)", task.id, task.title)
-            self._track_background_task(asyncio.create_task(self._run_fr(task)))
-            fr_running += 1
-
-        # 3. Assign IMPLEMENTED tasks to available FIs
-        implemented = await self.task_queue.get_tasks(TaskStatus.IMPLEMENTED)
-        fi_running = self.spawner.running_count(AgentRole.FEATURE_INTERPRETER)
-        for task in implemented:
-            if fi_running >= self.config.max_fi:
-                break
-            if task.id in self._running_tasks:
-                continue
-            log.info("Dispatching FI for %s (%s)", task.id, task.title)
-            self._track_background_task(asyncio.create_task(self._run_fi(task)))
-            fi_running += 1
+        """Main loop — delegates to AutoDriver."""
+        await self.auto_driver.run_loop()
 
     def stop(self) -> None:
-        self._stop = True
+        self.auto_driver.stop()

@@ -1,10 +1,11 @@
-"""Task 5.4 — FI mutex serialization.
+"""FI mutex serialization — only one FI runs at a time.
 
-Two concurrent `_run_fi` calls must serialize via `self._fi_lock` (added in
-Task 5.2): the dev server each FI spawns binds the project's port, so parallel
-FI runs would conflict. We assert serialization by timing two `_run_fi`
-invocations issued via `asyncio.gather` — if the lock is removed they finish
-in roughly the per-FI time (~0.5s), with the lock they finish in ~2x that.
+Two parallel `mgr.submit(role="fi", ...)` calls must serialize via
+`AgentRunManager._fi_lock`: the dev server each FI spawns binds the
+project's port, so parallel FI runs would conflict. We assert
+serialization by timing two submits issued in close succession — if the
+lock is removed they finish in roughly the per-FI time (~0.5s), with the
+lock they finish in ~2x that.
 """
 
 import asyncio
@@ -67,8 +68,7 @@ async def test_two_fi_runs_serialize(
             )
         orch.context.get_worktree_path = lambda tid: tmp_path / f"wt-{tid}"
 
-        # Pre-write empty report files so the parser returns no findings
-        # (we don't care about findings here — only timing).
+        # Empty findings → simple report parsing.
         for tid in ("ta", "tb"):
             rep = orch.context.get_report_path(tid)
             rep.parent.mkdir(parents=True, exist_ok=True)
@@ -78,7 +78,6 @@ async def test_two_fi_runs_serialize(
                 "## Important (Should Fix)\n"
             )
 
-        # RunConfig with a tiny dev server (prints ready signal, then sleeps).
         cfg = RunConfig(
             command=(
                 'python -c "import time; '
@@ -90,8 +89,7 @@ async def test_two_fi_runs_serialize(
         )
         await orch.context.save_run_config(cfg)
 
-        # Each FI invocation pauses 0.5s inside fake_claude before returning
-        # the result event, so a single _run_fi takes ~0.5s of dominant time.
+        # Each FI invocation pauses 0.5s inside fake_claude.
         fake_claude_env([
             {"type": "system", "model": "sonnet", "session_id": "fi"},
             {"_sleep": 0.5},
@@ -100,18 +98,24 @@ async def test_two_fi_runs_serialize(
              "is_error": False, "duration_ms": 500, "num_turns": 1},
         ])
 
-        ta = await orch.task_queue.get_task("ta")
-        tb = await orch.task_queue.get_task("tb")
-
         t0 = time.monotonic()
-        await asyncio.gather(orch._run_fi(ta), orch._run_fi(tb))
+        ra = await orch.manager.submit(
+            role="fi", target_kind="task", target_id="ta", mode="auto",
+        )
+        rb = await orch.manager.submit(
+            role="fi", target_kind="task", target_id="tb", mode="auto",
+        )
+        await asyncio.gather(
+            orch.manager.wait_for_finish(ra),
+            orch.manager.wait_for_finish(rb),
+        )
         elapsed = time.monotonic() - t0
 
-        # Serial (lock held): ≥ 2 × 0.5s sleep + dev-server overhead.
+        # Serial (lock held): >= 2 x 0.5s sleep + dev-server overhead.
         # Parallel (lock missing): ~0.5s + overhead, well under 0.9s.
         assert elapsed >= 0.9, (
             f"Expected serial >= 0.9s, got {elapsed:.2f}s — "
-            "_fi_lock is not serializing _run_fi calls"
+            "_fi_lock is not serializing FI runs"
         )
     finally:
         await orch.close()

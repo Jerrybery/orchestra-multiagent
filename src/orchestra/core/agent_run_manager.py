@@ -120,8 +120,14 @@ class AgentRunManager:
         finally:
             self._running.pop(run_id, None)
 
-        await self._finish(run_id, ctx, result)
-        evt.set()
+        try:
+            await self._finish(run_id, ctx, result)
+        except Exception:
+            log.exception("_finish failed for run %d", run_id)
+        finally:
+            # Always release waiters even if state-machine bookkeeping
+            # raised — otherwise wait_for_finish() blocks forever.
+            evt.set()
 
     async def _finish(self, run_id: int, ctx: RunContext,
                       result: RunResult) -> None:
@@ -181,13 +187,41 @@ class AgentRunManager:
             return  # FR/FI manual: don't touch state machine
 
         if ctx.role == "fr":
+            # Drive ASSIGNED → IN_PROGRESS → IMPLEMENTED. The intermediate
+            # IN_PROGRESS is required by the state machine and used to
+            # surface "task is currently being worked on" in the UI; we
+            # collapse it here at the boundary since the Runner doesn't
+            # touch the task table.
+            current = await self.task_queue.get_task(ctx.target_id)
+            if current and current.status == TaskStatus.ASSIGNED:
+                await self.task_queue.transition(
+                    ctx.target_id, TaskStatus.IN_PROGRESS,
+                )
             await self.task_queue.transition(
                 ctx.target_id, TaskStatus.IMPLEMENTED,
             )
         elif ctx.role == "fi":
-            await self.task_queue.transition(
-                ctx.target_id, TaskStatus.REVIEW,
-            )
+            # Drive IMPLEMENTED → TESTING → REVIEW (or IMPLEMENTED → TESTING
+            # → REJECTED when FI flags a worktree violation).
+            current = await self.task_queue.get_task(ctx.target_id)
+            if current and current.status == TaskStatus.IMPLEMENTED:
+                await self.task_queue.transition(
+                    ctx.target_id, TaskStatus.TESTING,
+                )
+            # If FI flagged a violation, the snapshot carries
+            # recommendation=reject; reflect that in the task state.
+            if snap.get("recommendation") == "reject" and snap.get("reason"):
+                await self.task_queue.transition(
+                    ctx.target_id, TaskStatus.REVIEW,
+                )
+                await self.task_queue.transition(
+                    ctx.target_id, TaskStatus.REJECTED,
+                    reject_reason=snap["reason"],
+                )
+            else:
+                await self.task_queue.transition(
+                    ctx.target_id, TaskStatus.REVIEW,
+                )
 
     async def wait_for_finish(self, run_id: int) -> None:
         evt = self._finished_events.get(run_id)
