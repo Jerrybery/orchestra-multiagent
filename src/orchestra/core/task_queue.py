@@ -288,9 +288,9 @@ class AgentRun:
     log_path: Optional[str] = None
 
     @classmethod
-    def from_row(cls, row) -> "AgentRun":
+    def from_row(cls, row: aiosqlite.Row) -> AgentRun:
         d = dict(row)
-        if d.get("result_snapshot"):
+        if d.get("result_snapshot") is not None:
             d["result_snapshot"] = json.loads(d["result_snapshot"])
         return cls(**d)
 
@@ -831,11 +831,14 @@ class TaskQueue:
         clauses = []
         params = []
         if target_id:
-            clauses.append("target_id = ?"); params.append(target_id)
+            clauses.append("target_id = ?")
+            params.append(target_id)
         if role:
-            clauses.append("role = ?"); params.append(role)
+            clauses.append("role = ?")
+            params.append(role)
         if status:
-            clauses.append("status = ?"); params.append(status)
+            clauses.append("status = ?")
+            params.append(status)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"SELECT * FROM agent_runs {where} ORDER BY started_at DESC LIMIT ?"
         params.append(limit)
@@ -850,7 +853,7 @@ class TaskQueue:
             "UPDATE agent_runs SET status = ?, finished_at = ?, "
             "result_snapshot = ?, session_id = ?, error_message = ? WHERE id = ?",
             (status, time.time(),
-             json.dumps(result_snapshot) if result_snapshot else None,
+             json.dumps(result_snapshot) if result_snapshot is not None else None,
              session_id, error_message, run_id),
         )
         await self._db.commit()
