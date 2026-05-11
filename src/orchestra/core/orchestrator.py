@@ -398,11 +398,11 @@ class Orchestrator:
         )
 
         if self.tracker and self.tracker.config.auto_submit:
-            proposal_id = await self.submit_requirement(tagged_req)
+            req_id = await self.submit_requirement(tagged_req)
             await self.github.post_issue_comment(
                 tree.root_issue,
-                f"This discussion has been submitted for implementation.\n"
-                f"Proposal: `{proposal_id}`\n\n"
+                f"This discussion has been queued for implementation.\n"
+                f"Requirement: `{req_id}` (proposal will be created by HL)\n\n"
                 f"Tracked sub-issues: {', '.join(f'#{n}' for n in tree.all_issue_numbers)}",
             )
             tree.status = "submitted"
@@ -430,15 +430,16 @@ class Orchestrator:
             f"[Tracked issues: {', '.join(f'#{n}' for n in tree.all_issue_numbers)}]\n\n"
             f"{tree.last_analysis}"
         )
-        proposal_id = await self.submit_requirement(tagged_req)
+        req_id = await self.submit_requirement(tagged_req)
 
         await self.github.post_issue_comment(
             tree.root_issue,
-            f"Discussion submitted for implementation. Proposal: `{proposal_id}`",
+            f"Discussion queued for implementation. Requirement: `{req_id}` "
+            f"(proposal will be created by HL)",
         )
         tree.status = "submitted"
         await self.task_queue.update_discussion(root_issue, status="submitted")
-        return proposal_id
+        return req_id
 
     async def submit_issue_as_idea(self, issue_number: int,
                                     extra_instruction: str = "") -> str:
@@ -485,20 +486,20 @@ class Orchestrator:
 
         requirement = "\n".join(parts)
 
-        proposal_id = await self.submit_requirement(requirement)
+        req_id = await self.submit_requirement(requirement)
 
         await self.github.post_issue_comment(
             issue_number,
-            f"This issue has been submitted as an idea for implementation.\n"
-            f"Proposal: `{proposal_id}`",
+            f"This issue has been queued as an idea for implementation.\n"
+            f"Requirement: `{req_id}` (proposal will be created by HL)",
         )
 
         await self._emit("issue_submitted_as_idea", {
             "issue_number": issue_number,
-            "proposal_id": proposal_id,
+            "requirement_id": req_id,
         })
 
-        return proposal_id
+        return req_id
 
     async def submit_discussion_as_idea(self, root_issue: int,
                                          extra_instruction: str = "") -> str:
@@ -551,12 +552,12 @@ class Orchestrator:
 
         requirement = "\n".join(parts)
 
-        proposal_id = await self.submit_requirement(requirement)
+        req_id = await self.submit_requirement(requirement)
 
         await self.github.post_issue_comment(
             tree.root_issue,
-            f"Discussion submitted as idea for implementation.\n"
-            f"Proposal: `{proposal_id}`\n"
+            f"Discussion queued as idea for implementation.\n"
+            f"Requirement: `{req_id}` (proposal will be created by HL)\n"
             f"Included issues: {', '.join(f'#{n}' for n in tree.all_issue_numbers)}",
         )
 
@@ -565,11 +566,11 @@ class Orchestrator:
 
         await self._emit("discussion_submitted_as_idea", {
             "root_issue": root_issue,
-            "proposal_id": proposal_id,
+            "requirement_id": req_id,
             "issue_count": len(tree.nodes),
         })
 
-        return proposal_id
+        return req_id
 
     # ── Prompt Loading ──────────────────────────────────────────────
 
