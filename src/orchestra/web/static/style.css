@@ -1822,3 +1822,62 @@ body.resizing-v { cursor: row-resize; user-select: none; }
   background-clip: content-box;
   border: 2px solid transparent;
 }
+
+/* ── Auto-pause badge + manual run buttons (Task 5.1) ───────── */
+.auto-pause-badge {
+  background: #5a2020;
+  border: 1px solid #f85149;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 8px 0;
+  color: #f0c8c8;
+  font-size: 13px;
+}
+.manual-run-buttons {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+/* ── Runs history panel + run detail modal (Task 5.2) ───────── */
+.runs-panel { margin: 12px 0; }
+.runs-list { list-style: none; padding: 0; }
+.run-row {
+  display: grid;
+  grid-template-columns: 60px 80px 100px 1fr;
+  gap: 8px; padding: 6px 12px;
+  border-bottom: 1px solid #21262d;
+  cursor: pointer;
+}
+.run-row:hover { background: #21262d; }
+.run-role { font-weight: bold; }
+.run-detail-modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 300;
+}
+.run-detail-card {
+  background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+  padding: 24px; max-width: 700px; max-height: 80vh; overflow: auto;
+}
+.chat-msg { padding: 6px 12px; margin: 4px 0; border-radius: 6px; }
+.chat-user { background: #1c2333; }
+.chat-assistant { background: #1c331c; }
+
+/* ── HL chat drawer (Task 5.3) ───────────────────────────────── */
+.chat-drawer {
+  position: fixed; right: 0; top: 0; bottom: 0;
+  width: 460px; background: #161b22;
+  border-left: 1px solid #30363d;
+  display: flex; flex-direction: column;
+  z-index: 250;
+}
+.chat-drawer.hidden { display: none; }
+.chat-drawer-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px; border-bottom: 1px solid #30363d;
+}
+.chat-features-preview { padding: 12px; border-bottom: 1px solid #30363d; max-height: 200px; overflow: auto; }
+.chat-messages { flex: 1; overflow: auto; padding: 12px; }
+.chat-input-row { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #30363d; }
+.chat-input-row textarea { flex: 1; }
