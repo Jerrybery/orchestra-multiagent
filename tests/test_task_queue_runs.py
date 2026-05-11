@@ -83,20 +83,25 @@ async def test_finish_agent_run_empty_snapshot_roundtrips(tmp_path):
 
 @pytest.mark.asyncio
 async def test_migrate_is_idempotent(tmp_path):
+    """_migrate must be safe to call multiple times against the same DB."""
     q = TaskQueue(tmp_path / "t.db")
     await q.init()
-    await q.close()
-    # re-init twice — _migrate must be idempotent
-    q2 = TaskQueue(tmp_path / "t.db")
-    await q2.init()
-    # verify new fields exist
-    async with q2._db.execute("PRAGMA table_info(tasks)") as cur:
+    # Call _migrate explicitly multiple times — must not raise
+    await q._migrate()
+    await q._migrate()
+    await q._migrate()
+    # Verify new fields exist
+    async with q._db.execute("PRAGMA table_info(tasks)") as cur:
         cols = {r["name"] async for r in cur}
     assert "spec" in cols
-    async with q2._db.execute("PRAGMA table_info(requirements)") as cur:
+    async with q._db.execute("PRAGMA table_info(requirements)") as cur:
         cols = {r["name"] async for r in cur}
     assert "status" in cols
-    async with q2._db.execute("PRAGMA table_info(review_findings)") as cur:
+    async with q._db.execute("PRAGMA table_info(review_findings)") as cur:
         cols = {r["name"] async for r in cur}
     assert "run_id" in cols
+    # Also verify re-open path works (the original scenario)
+    await q.close()
+    q2 = TaskQueue(tmp_path / "t.db")
+    await q2.init()
     await q2.close()

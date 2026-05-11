@@ -184,7 +184,7 @@ class Requirement:
     id: str
     content: str
     created_at: float = 0.0
-    status: str = "pending"     # NEW
+    status: str = "pending"
 
 
 @dataclass
@@ -263,7 +263,7 @@ class Task:
     updated_at: float = 0.0
     fr_session_id: Optional[str] = None
     fail_reason: Optional[str] = None
-    spec: Optional[str] = None    # NEW: spec content (moved from disk in Task 1.4)
+    spec: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: aiosqlite.Row) -> Task:
@@ -371,7 +371,7 @@ class TaskQueue:
             cols = {row["name"] async for row in cur}
         if "status" not in cols:
             await self._db.execute(
-                "ALTER TABLE requirements ADD COLUMN status TEXT DEFAULT 'pending'"
+                "ALTER TABLE requirements ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'"
             )
 
         # NEW: run_id on review_findings
