@@ -54,6 +54,7 @@ class ContextManager:
         self.reports_dir = orchestra_dir / "reports"
         self.worktrees_dir = orchestra_dir / "worktrees"
         self.logs_dir = orchestra_dir / "logs"
+        self._task_queue = None
 
     def init(self) -> None:
         """Create directory structure and default files."""
@@ -81,6 +82,40 @@ class ContextManager:
     def read_spec(self, task_id: str) -> Optional[str]:
         path = self.get_spec_path(task_id)
         return path.read_text() if path.exists() else None
+
+    # ------------------------------------------------------------------
+    # DB-backed spec IO (new source of truth)
+    # ------------------------------------------------------------------
+
+    def attach_db(self, task_queue) -> None:
+        """Attach the TaskQueue so spec IO can go through DB."""
+        self._task_queue = task_queue
+
+    async def write_spec_async(self, task_id: str, content: str) -> None:
+        if self._task_queue is None:
+            raise RuntimeError("ContextManager.attach_db not called")
+        await self._task_queue.update_task_spec(task_id, content)
+
+    async def read_spec_async(self, task_id: str) -> Optional[str]:
+        if self._task_queue is None:
+            raise RuntimeError("ContextManager.attach_db not called")
+        task = await self._task_queue.get_task(task_id)
+        return task.spec if task else None
+
+    async def migrate_specs_from_disk(self) -> int:
+        """One-shot: for each task without DB spec but with a disk file, load it."""
+        if self._task_queue is None:
+            raise RuntimeError("ContextManager.attach_db not called")
+        tasks = await self._task_queue.get_tasks()
+        migrated = 0
+        for t in tasks:
+            if t.spec:
+                continue
+            p = self.get_spec_path(t.id)
+            if p.exists():
+                await self._task_queue.update_task_spec(t.id, p.read_text())
+                migrated += 1
+        return migrated
 
     def get_report_path(self, task_id: str) -> Path:
         return self.reports_dir / f"{task_id}-report.md"
