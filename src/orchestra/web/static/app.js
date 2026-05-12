@@ -15,8 +15,19 @@ const STATUS_COLORS = {
   rejected:          '#f85149',
 };
 
-// Branch colors for git graph (cycle through these)
-const BRANCH_COLORS = ['#f97583','#79c0ff','#56d364','#d2a8ff','#ffa657','#ff7b72','#7ee787','#d29922'];
+// Branch colors for git graph — hues stepped ~45° apart for max contrast
+// (the old palette had two near-identical reds + two near-identical greens,
+// making adjacent lanes hard to tell apart).
+const BRANCH_COLORS = [
+  '#58a6ff',  // blue (main default)
+  '#f85149',  // red
+  '#3fb950',  // green
+  '#bc8cff',  // purple
+  '#f0883e',  // orange
+  '#56d4d2',  // cyan
+  '#ff7eb6',  // pink
+  '#e3b341',  // yellow
+];
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -76,7 +87,7 @@ async function fetchProposalDetail(proposalId) {
 
 const COMMIT_Y_STEP = 28;
 const COMMIT_X_BASE = 50;    // leftmost lane X
-const LANE_WIDTH = 24;       // horizontal distance between branch lanes
+const LANE_WIDTH = 44;       // horizontal distance between branch lanes (wider = easier to distinguish)
 const IDEA_OFFSET_X = 120;   // horizontal distance from rightmost lane to idea node
 const FEAT_ROW_H = 52;       // vertical spacing between feature rows
 const PAD_TOP = 40;
