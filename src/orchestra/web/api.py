@@ -400,9 +400,59 @@ async def get_prs(state: str = "all"):
     ]
 
 
+@app.get("/api/branches/active")
+async def list_active_branches(limit: int = 15):
+    """Branches sorted by last-committer-date, most recent first.
+
+    Fuels the branch-picker UI. ``limit`` caps the response.
+    """
+    orch = _orch()
+    return await orch.worktree.list_active_branches(limit=limit)
+
+
+def _smart_default_branches(active: list[dict], limit: int = 15) -> list[str]:
+    """Pick a readable default set: main/master always shown if present.
+
+    Strategy:
+      1. Always include local ``main``/``master`` (or ``origin/main``,
+         ``origin/master``) when they exist, at the front of the list.
+      2. Fill the rest from the most recently committed branches.
+      3. Cap total at ``limit``.
+
+    If the repo somehow has zero refs (fresh repo), return an empty list
+    — the caller will fall back to the legacy ``--all --remotes`` path.
+    """
+    names = [b["name"] for b in active]
+    canonical_priority: list[str] = []
+    for canon in ("main", "master"):
+        for cand in (canon, f"origin/{canon}"):
+            if cand in names:
+                canonical_priority.append(cand)
+                break
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for n in canonical_priority:
+        if n not in seen:
+            result.append(n)
+            seen.add(n)
+    for n in names:
+        if len(result) >= limit:
+            break
+        if n not in seen:
+            result.append(n)
+            seen.add(n)
+    return result[:limit]
+
+
 @app.get("/api/graph")
-async def get_graph():
-    """Return the full DAG: requirements → tasks with deps and status."""
+async def get_graph(branches: Optional[str] = None):
+    """Return the full DAG: requirements → tasks with deps and status.
+
+    Optional ``branches`` query param: comma-separated branch names to
+    visualize. When omitted, falls back to a smart default (main/master +
+    most recently active branches, capped at 15).
+    """
     orch = _orch()
     tasks = await orch.task_queue.get_tasks()
     reqs = await orch.task_queue.get_all_requirements()
@@ -461,11 +511,24 @@ async def get_graph():
     # Also surface paused proposals so the UI can show the "已暂停" badge.
     paused_proposals = await orch.task_queue.get_proposals(status="paused")
 
-    # Include repo branches (non-feat/ branches)
-    branches = await orch.worktree.list_branches()
+    # Include repo branches (non-feat/ branches) for the side panel list
+    branches_meta = await orch.worktree.list_branches()
 
-    # Git commit log for the graph
-    commits = await orch.worktree.get_log_graph(max_count=200)
+    # Resolve the visible branch set: either user-supplied via ?branches=,
+    # or a smart default (main/master + most recently active, capped at 15).
+    if branches:
+        branch_list = [b.strip() for b in branches.split(",") if b.strip()]
+    else:
+        active = await orch.worktree.list_active_branches(limit=15)
+        branch_list = _smart_default_branches(active, limit=15)
+
+    # Git commit log for the graph, filtered to the resolved branches.
+    # If branch_list is empty (no refs at all), fall back to --all so a
+    # fresh repo still renders.
+    commits = await orch.worktree.get_log_graph(
+        max_count=200,
+        branches=branch_list if branch_list else None,
+    )
 
     proposals_payload = [
         {"id": p.id, "requirement_id": p.requirement_id, "summary": p.summary,
@@ -473,8 +536,9 @@ async def get_graph():
         for p in (pending_proposals + paused_proposals)
     ]
 
-    return {"nodes": nodes, "edges": edges, "branches": branches, "commits": commits,
-            "proposals": proposals_payload}
+    return {"nodes": nodes, "edges": edges, "branches": branches_meta,
+            "commits": commits, "proposals": proposals_payload,
+            "visible_branches": branch_list}
 
 
 class IssueIdeaRequest(BaseModel):
