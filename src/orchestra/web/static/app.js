@@ -1932,7 +1932,13 @@ async function runConfigSave() {
   if (r.ok) {
     document.getElementById('setup-step3').classList.add('hidden');
     document.getElementById('setup-screen').classList.add('hidden');
-    location.reload();
+    // Hand off to dashboard without a full page reload (which felt like a hang).
+    try {
+      const s = await fetch('/api/status').then(r => r.json());
+      showDashboard(s.project_path);
+    } catch (e) {
+      location.reload();  // fallback if status fetch fails
+    }
   } else {
     const result = document.getElementById('rc-test-result');
     let msg = 'Save failed';
