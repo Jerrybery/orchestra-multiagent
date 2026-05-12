@@ -505,6 +505,176 @@ main {
   min-height: 100%;
 }
 
+/* ── Branch picker (chips above graph) ────────────────────────── */
+.branch-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: 12px;
+}
+.branch-picker:empty { display: none; }
+.branch-picker-label {
+  color: var(--text-mute);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-right: 4px;
+}
+.branch-picker-empty {
+  color: var(--text-mute);
+  font-style: italic;
+}
+.branch-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  font-size: 12px;
+  color: var(--text);
+  font-family: var(--font-mono, monospace);
+}
+.branch-chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #58a6ff;
+  opacity: 0.7;
+}
+.branch-chip .chip-close {
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.branch-chip .chip-close:hover { opacity: 1; }
+.branch-add-btn,
+.branch-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 12px;
+  background: transparent;
+  border: 1px dashed #30363d;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: inherit;
+}
+.branch-add-btn:hover,
+.branch-reset-btn:hover {
+  background: #21262d;
+  color: var(--text);
+  border-color: #484f58;
+}
+.branch-reset-btn {
+  border-style: solid;
+  margin-left: 4px;
+}
+
+/* ── Branch picker modal ──────────────────────────────────────── */
+.branch-picker-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.branch-picker-modal-inner {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 480px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+}
+.branch-picker-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.branch-picker-modal-close {
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 18px;
+  line-height: 1;
+}
+.branch-picker-modal-close:hover { opacity: 1; }
+.branch-picker-search {
+  margin: 10px 14px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+}
+.branch-picker-list {
+  flex: 1;
+  overflow: auto;
+  padding: 0 8px 6px 8px;
+  min-height: 200px;
+}
+.branch-picker-list-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-mute);
+  font-style: italic;
+  font-size: 12px;
+}
+.branch-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: var(--font-mono, monospace);
+}
+.branch-picker-row:hover { background: #21262d; }
+.branch-picker-row-name {
+  flex: 1;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.branch-picker-row-tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: #30363d;
+  color: var(--text-dim);
+}
+.branch-picker-row-meta {
+  color: var(--text-mute);
+  font-size: 11px;
+}
+.branch-picker-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+
 /* ── DETAIL PANEL WITH SIDE TABS ───────────────────────────── */
 #detail-panel {
   width: 520px;

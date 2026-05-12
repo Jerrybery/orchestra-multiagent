@@ -31,9 +31,11 @@ const BRANCH_COLORS = [
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-let graphData = { nodes: [], edges: [], branches: [], commits: [], proposals: [] };
+let graphData = { nodes: [], edges: [], branches: [], commits: [], proposals: [], visible_branches: [] };
 let selectedNodeId = null;
 let tooltipEl = null;
+// null = use backend's smart default; an array = explicit user picks
+let currentBranchFilter = null;
 
 // ── Init tooltip element ────────────────────────────────────────
 function initTooltip() {
@@ -62,15 +64,213 @@ function hideTooltip() {
 // ── Fetch helpers ───────────────────────────────────────────────
 
 async function fetchGraph() {
-  const res = await fetch('/api/graph');
+  let url = '/api/graph';
+  if (currentBranchFilter && currentBranchFilter.length) {
+    url += '?branches=' + encodeURIComponent(currentBranchFilter.join(','));
+  }
+  const res = await fetch(url);
   graphData = await res.json();
   renderGraph();
+  renderBranchPicker();
 }
 
 async function fetchAgents() {
   const res = await fetch('/api/agents');
   const agents = await res.json();
   renderAgents(agents);
+}
+
+async function fetchActiveBranches(limit = 200) {
+  const res = await fetch(`/api/branches/active?limit=${limit}`);
+  if (!res.ok) return [];
+  return await res.json();
+}
+
+// ── Branch picker ───────────────────────────────────────────────
+
+function renderBranchPicker() {
+  const host = document.getElementById('branch-picker');
+  if (!host) return;
+  host.innerHTML = '';
+
+  const visible = graphData.visible_branches || [];
+
+  const label = document.createElement('span');
+  label.className = 'branch-picker-label';
+  label.textContent = 'Branches:';
+  host.appendChild(label);
+
+  if (!visible.length) {
+    const empty = document.createElement('span');
+    empty.className = 'branch-picker-empty';
+    empty.textContent = '(default)';
+    host.appendChild(empty);
+  }
+
+  for (const name of visible) {
+    const chip = document.createElement('span');
+    chip.className = 'branch-chip';
+    const dot = document.createElement('span');
+    dot.className = 'branch-chip-dot';
+    chip.appendChild(dot);
+    const text = document.createElement('span');
+    text.textContent = name;
+    chip.appendChild(text);
+
+    const close = document.createElement('span');
+    close.className = 'chip-close';
+    close.textContent = '×';
+    close.title = `Hide ${name}`;
+    close.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeBranchFromFilter(name);
+    });
+    chip.appendChild(close);
+    host.appendChild(chip);
+  }
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'branch-add-btn';
+  addBtn.textContent = '+ add';
+  addBtn.addEventListener('click', openBranchPickerModal);
+  host.appendChild(addBtn);
+
+  if (currentBranchFilter !== null) {
+    const reset = document.createElement('button');
+    reset.className = 'branch-reset-btn';
+    reset.textContent = 'reset';
+    reset.title = 'Restore default branch selection';
+    reset.addEventListener('click', () => {
+      currentBranchFilter = null;
+      fetchGraph();
+    });
+    host.appendChild(reset);
+  }
+}
+
+function removeBranchFromFilter(name) {
+  // Bootstrap currentBranchFilter from whatever the backend last gave us
+  // so the user starts editing the smart default rather than nothing.
+  const base = currentBranchFilter !== null
+    ? currentBranchFilter
+    : (graphData.visible_branches || []);
+  const next = base.filter(b => b !== name);
+  // Allow empty list — backend will fall back to --all for an empty
+  // filter only when the user has never picked anything. When the user
+  // explicitly empties their selection, we send ?branches= (empty) which
+  // the backend interprets as "no branches given → smart default".
+  // To avoid that surprise, keep at least one branch; if the user
+  // removes the last one, reset to default.
+  if (next.length === 0) {
+    currentBranchFilter = null;
+  } else {
+    currentBranchFilter = next;
+  }
+  fetchGraph();
+}
+
+async function openBranchPickerModal() {
+  const existing = document.getElementById('branch-picker-modal');
+  if (existing) existing.remove();
+
+  const active = await fetchActiveBranches(200);
+  const visible = new Set(graphData.visible_branches || []);
+
+  const modal = document.createElement('div');
+  modal.id = 'branch-picker-modal';
+  modal.className = 'branch-picker-modal';
+
+  const inner = document.createElement('div');
+  inner.className = 'branch-picker-modal-inner';
+
+  const header = document.createElement('div');
+  header.className = 'branch-picker-modal-header';
+  header.innerHTML = '<b>Add branch</b>';
+  const closeX = document.createElement('span');
+  closeX.className = 'branch-picker-modal-close';
+  closeX.textContent = '×';
+  closeX.addEventListener('click', () => modal.remove());
+  header.appendChild(closeX);
+  inner.appendChild(header);
+
+  const search = document.createElement('input');
+  search.type = 'text';
+  search.placeholder = 'Search branches…';
+  search.className = 'branch-picker-search';
+  inner.appendChild(search);
+
+  const list = document.createElement('div');
+  list.className = 'branch-picker-list';
+  inner.appendChild(list);
+
+  function renderList(filter = '') {
+    list.innerHTML = '';
+    const q = filter.toLowerCase();
+    const matches = active.filter(b => !q || b.name.toLowerCase().includes(q));
+    if (!matches.length) {
+      const empty = document.createElement('div');
+      empty.className = 'branch-picker-list-empty';
+      empty.textContent = 'No matching branches';
+      list.appendChild(empty);
+      return;
+    }
+    for (const b of matches.slice(0, 100)) {
+      const row = document.createElement('label');
+      row.className = 'branch-picker-row';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = visible.has(b.name);
+      cb.addEventListener('change', () => {
+        if (cb.checked) visible.add(b.name);
+        else visible.delete(b.name);
+      });
+      row.appendChild(cb);
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'branch-picker-row-name';
+      nameSpan.textContent = b.name;
+      if (b.is_remote) {
+        const r = document.createElement('span');
+        r.className = 'branch-picker-row-tag';
+        r.textContent = 'remote';
+        nameSpan.appendChild(r);
+      }
+      row.appendChild(nameSpan);
+      const meta = document.createElement('span');
+      meta.className = 'branch-picker-row-meta';
+      meta.textContent = (b.last_commit_at || '').slice(0, 10);
+      row.appendChild(meta);
+      list.appendChild(row);
+    }
+  }
+  renderList();
+  search.addEventListener('input', () => renderList(search.value));
+
+  const footer = document.createElement('div');
+  footer.className = 'branch-picker-modal-footer';
+  const apply = document.createElement('button');
+  apply.className = 'btn';
+  apply.textContent = 'Apply';
+  apply.addEventListener('click', () => {
+    // Cap at 30 — beyond that the graph becomes unreadable.
+    const picked = Array.from(visible).slice(0, 30);
+    currentBranchFilter = picked.length ? picked : null;
+    modal.remove();
+    fetchGraph();
+  });
+  const cancel = document.createElement('button');
+  cancel.className = 'btn btn-ghost';
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => modal.remove());
+  footer.appendChild(cancel);
+  footer.appendChild(apply);
+  inner.appendChild(footer);
+
+  modal.appendChild(inner);
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) modal.remove();
+  });
+  document.body.appendChild(modal);
+  search.focus();
 }
 
 async function fetchTaskDetail(taskId) {
@@ -276,8 +476,30 @@ function buildLayout() {
     maxY = Math.max(maxY, fy + 30);
   });
 
+  // Map each branch name → tip commit hash (the most recent commit, in
+  // topo order, that carries that ref). Used by the render loop to draw
+  // a branch label only at its tip — every other commit on the branch
+  // still gets the colored dot, but no text. Critical for readability
+  // when many merge/tip commits share refs.
+  // Note: `commits` is newest-first (topo order from `git log`), so the
+  // first hit wins.
+  const branchTips = {};
+  for (const c of commits) {
+    for (const br of (c.branches || [])) {
+      if (!(br in branchTips)) branchTips[br] = c.hash;
+    }
+    for (const br of (c.remote_branches || [])) {
+      const canon = canonicalBranch(br);
+      // For remote labels we key by the raw remote name (e.g. 'origin/foo')
+      // so the render loop can compare against the un-canonicalized ref.
+      if (!(br in branchTips)) branchTips[br] = c.hash;
+      // Also stash the canonical name in case any consumer needs it.
+      if (!(canon in branchTips)) branchTips[canon] = c.hash;
+    }
+  }
+
   return { positions, commitPositions, branchColorMap, branchLaneMap,
-           numLanes, featX, ideaX,
+           numLanes, featX, ideaX, branchTips,
            width: maxX + 80, height: maxY + PAD_BOTTOM };
 }
 
@@ -407,14 +629,18 @@ function renderGraph() {
     // Inner filled circle (merge commits slightly larger)
     g.appendChild(svgEl('circle', { r: nodeR, fill: c.color }));
 
-    // Branch labels: local branches first, then remote branches (dashed border)
-    const allRefs = [
+    // Branch labels: drawn only at each branch's TIP commit, not at every
+    // commit that happens to carry the ref. (In a busy graph a single
+    // commit can be the tip of many branches; lower commits on those
+    // branches still get the dot/color but the text labels would just
+    // be visual noise.)
+    const tipRefs = [
       ...c.branches.map(n => ({ name: n, remote: false })),
       ...((c.remote_branches || []).map(n => ({ name: n, remote: true }))),
-    ];
-    for (let i = 0; i < allRefs.length; i++) {
+    ].filter(r => layout.branchTips[r.name] === c.hash);
+    for (let i = 0; i < tipRefs.length; i++) {
       const pillG = svgEl('g', { transform: `translate(${nodeR + 10}, ${-8 + i * 18})` });
-      const { name: brName, remote } = allRefs[i];
+      const { name: brName, remote } = tipRefs[i];
       // Strip origin/ prefix for color lookup; remote refs use gray-ish tone
       const colorKey = brName.replace(/^(origin|remotes\/[^/]+)\//, '');
       const brColor = remote ? '#8b949e' : (layout.branchColorMap[colorKey] || '#8b949e');
