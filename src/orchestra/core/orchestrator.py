@@ -16,6 +16,8 @@ from .worktree_manager import WorktreeManager
 from .github_manager import GitHubManager
 from .agent_spawner import AgentSpawner, AgentRole, AgentHandle, AgentResult
 from .issue_tracker import IssueTracker, WatchConfig, DiscussionTree
+from .claude_config import ClaudeConfigManager
+from .vault import Vault
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +130,8 @@ class OrchestraConfig:
     tracked_branch: Optional[str] = None  # auto-checkout to latest on startup
     auto_create_issues: bool = False  # default: do NOT auto-touch GitHub on
     # submit_requirement / approve_proposal. UI/API can override per-call.
+    claude_config_mgr: Optional[ClaudeConfigManager] = None
+    vault: Optional[Vault] = None
 
 
 class Orchestrator:
@@ -144,6 +148,8 @@ class Orchestrator:
             max_turns=config.max_turns,
             model=config.model,
             on_output=self._on_agent_output,
+            claude_config_mgr=config.claude_config_mgr,
+            vault=config.vault,
         )
         self._on_event: Optional[Callable[[str, dict], Awaitable[None]]] = None
         self.tracker: Optional[IssueTracker] = None

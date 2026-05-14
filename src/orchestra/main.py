@@ -18,6 +18,9 @@ from .core.issue_tracker import WatchConfig
 
 def load_config(config_path: Path, project_dir: Path) -> OrchestraConfig:
     """Load config.yaml and build OrchestraConfig."""
+    from .core.claude_config import ClaudeConfigManager
+    from .core.vault import Vault
+
     if config_path.exists():
         with open(config_path) as f:
             raw = yaml.safe_load(f) or {}
@@ -25,8 +28,15 @@ def load_config(config_path: Path, project_dir: Path) -> OrchestraConfig:
         raw = {}
 
     conc = raw.get("concurrency", {})
-    claude = raw.get("claude", {})
     orchestra_dir = project_dir / ".orchestra"
+
+    config_mgr = ClaudeConfigManager(config_path)
+    vault = Vault(
+        vault_path=orchestra_dir / "vault.enc",
+        key_path=Path.home() / ".orchestra-vault-key",
+    )
+
+    profile = config_mgr.active_profile()
 
     return OrchestraConfig(
         project_dir=project_dir,
@@ -34,9 +44,11 @@ def load_config(config_path: Path, project_dir: Path) -> OrchestraConfig:
         max_fr=conc.get("feature_realizer", 2),
         max_fi=conc.get("feature_interpreter", 1),
         max_hl=conc.get("head_leader", 1),
-        claude_cmd=claude.get("command", "claude"),
-        max_turns=claude.get("max_turns", 50),
-        model=claude.get("model"),
+        claude_cmd=config_mgr.config.command,
+        max_turns=profile.max_turns,
+        model=profile.model,
+        claude_config_mgr=config_mgr,
+        vault=vault,
     )
 
 
