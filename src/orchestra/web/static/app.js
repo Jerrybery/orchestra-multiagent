@@ -1847,11 +1847,13 @@ async function setupInit() {
   if (!path) return;
 
   const btn = document.getElementById('btn-setup-init');
+  const originalLabel = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Initializing...';
 
   try {
     const trackedBranch = document.getElementById('setup-tracked-branch').value.trim() || null;
+    console.log('[setupInit] POST /api/init', { path, trackedBranch });
     const res = await fetch('/api/init', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1859,25 +1861,29 @@ async function setupInit() {
     });
 
     if (!res.ok) {
-      const err = await res.json();
+      const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+      console.error('[setupInit] /api/init failed', err);
       alert(err.detail || 'Initialization failed');
-      btn.disabled = false;
-      btn.textContent = 'Initialize Orchestra';
       return;
     }
 
     const data = await res.json();
+    console.log('[setupInit] /api/init ok', data);
     // If a RunConfig already exists (re-initialized project), skip Step 3.
     const rcResp = await fetch('/api/run_config');
+    console.log('[setupInit] /api/run_config →', rcResp.status);
     if (rcResp.ok) {
       showDashboard(data.project_path);
     } else {
       setupShowStep3();
     }
   } catch (e) {
+    console.error('[setupInit] threw', e);
     alert('Error: ' + e.message);
+  } finally {
+    // Always re-enable so a transient error doesn't leave the button stuck.
     btn.disabled = false;
-    btn.textContent = 'Initialize Orchestra';
+    btn.textContent = originalLabel;
   }
 }
 
