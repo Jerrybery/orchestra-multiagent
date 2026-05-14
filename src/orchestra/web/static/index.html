@@ -237,6 +237,10 @@
         <span class="side-tab-icon">⤴</span>
         <span class="side-tab-label">PRs</span>
       </button>
+      <button class="side-tab" data-side-tab="config" title="Claude Code configuration">
+        <span class="side-tab-icon">⚙</span>
+        <span class="side-tab-label">Config</span>
+      </button>
       <div class="side-tabs-spacer"></div>
       <button class="side-tab" id="btn-show-agents" title="Running agents">
         <span class="side-tab-icon">◈</span>
@@ -297,6 +301,11 @@
             <button class="btn btn-compact" onclick="fetchPRs()">↻</button>
           </div>
           <div id="prs-list"></div>
+        </div>
+
+        <!-- Config -->
+        <div class="side-tab-pane" data-pane="config">
+          <div id="config-panel"></div>
         </div>
       </div>
     </div>

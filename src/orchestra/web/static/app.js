@@ -3263,6 +3263,7 @@ const SIDE_TAB_HANDLERS = {
   discussions: () => fetchDiscussions(),
   issues: () => { if (!issuesCache.length) fetchIssues(); },
   prs: () => { if (!prsCache.length) fetchPRs(); },
+  config: () => { fetchClaudeConfig(); fetchVaultKeys(); },
 };
 
 function activateSideTab(tabName) {
@@ -3389,3 +3390,398 @@ async function openRunConfigEditor() {
     document.getElementById('setup-screen').classList.remove('hidden');
   }
 })();
+
+// ── Claude Config Tab ─────────────────────────────────────────
+
+let _configData = null;
+
+async function fetchClaudeConfig() {
+  const res = await fetch('/api/claude-config');
+  if (!res.ok) return;
+  _configData = await res.json();
+  renderConfigPanel();
+}
+
+function renderConfigPanel() {
+  const el = document.getElementById('config-panel');
+  if (!el || !_configData) return;
+
+  const { active_profile, profiles } = _configData;
+  const profileNames = Object.keys(profiles);
+
+  let html = '<div class="config-profiles">';
+
+  // Profile cards
+  html += '<div class="config-profile-cards">';
+  for (const name of profileNames) {
+    const p = profiles[name];
+    const isActive = name === active_profile;
+    html += `
+      <div class="config-card ${isActive ? 'config-card-active' : ''}"
+           onclick="selectConfigProfile('${name}')">
+        <div class="config-card-name">${name}</div>
+        <div class="config-card-meta">
+          <span class="config-badge">${p.provider}</span>
+          <span class="config-badge">${p.model}</span>
+        </div>
+        ${isActive ? '<div class="config-card-active-dot">●</div>' : ''}
+      </div>`;
+  }
+  html += `
+    <div class="config-card config-card-add" onclick="showCreateProfileDialog()">
+      <span class="config-add-icon">+</span>
+      <span>New Profile</span>
+    </div>`;
+  html += '</div>';
+
+  // Active profile editor
+  const selectedName = _selectedConfigProfile || active_profile;
+  const p = profiles[selectedName];
+  if (p) {
+    html += renderProfileEditor(selectedName, p);
+  }
+
+  // Vault section
+  html += renderVaultSection();
+
+  html += '</div>';
+  el.innerHTML = html;
+  fetchVaultKeys();
+}
+
+function renderProfileEditor(name, p) {
+  const roleNames = ['head_leader', 'feature_realizer', 'feature_interpreter', 'discussion_analyst'];
+  const envRows = Object.entries(p.env || {}).map(([k, v]) =>
+    `<tr>
+      <td><input class="config-input config-input-sm" value="${k}" data-env-key="${k}" onchange="updateProfileEnvKey(this, '${name}')"></td>
+      <td><input class="config-input config-input-sm" value="${v.startsWith('vault:') ? v : v}" ${v.startsWith('vault:') ? 'readonly' : ''} data-env-val="${k}" onchange="updateProfileEnvVal(this, '${name}')">
+      </td>
+      <td><button class="btn-icon-sm" onclick="removeProfileEnv('${name}', '${k}')">&times;</button></td>
+    </tr>`
+  ).join('');
+
+  const mcpRows = Object.entries(p.mcp_servers || {}).map(([sname, srv]) =>
+    `<tr>
+      <td><code>${sname}</code></td>
+      <td><code>${srv.command || ''} ${(srv.args || []).join(' ')}</code></td>
+      <td><button class="btn-icon-sm" onclick="removeMcpServer('${name}', '${sname}')">&times;</button></td>
+    </tr>`
+  ).join('');
+
+  return `
+  <div class="config-editor">
+    <div class="config-section">
+      <div class="config-section-header" onclick="toggleConfigSection(this)">
+        <span>Provider & Model</span><span class="config-chevron">▸</span>
+      </div>
+      <div class="config-section-body">
+        <div class="config-row">
+          <label>Provider</label>
+          <select class="config-input" onchange="updateProfile('${name}', 'provider', this.value)">
+            ${['anthropic','bedrock','vertex','custom'].map(o =>
+              `<option value="${o}" ${p.provider === o ? 'selected' : ''}>${o}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div class="config-row">
+          <label>Model</label>
+          <input class="config-input" value="${p.model}" onchange="updateProfile('${name}', 'model', this.value)">
+        </div>
+        <div class="config-row" ${p.provider !== 'custom' ? 'style="display:none"' : ''}>
+          <label>API Base URL</label>
+          <input class="config-input" value="${p.api_base_url || ''}" onchange="updateProfile('${name}', 'api_base_url', this.value)">
+        </div>
+      </div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-section-header" onclick="toggleConfigSection(this)">
+        <span>Agent Settings</span><span class="config-chevron">▸</span>
+      </div>
+      <div class="config-section-body">
+        <div class="config-row">
+          <label>Max Turns</label>
+          <input class="config-input" type="number" value="${p.max_turns}" onchange="updateProfile('${name}', 'max_turns', parseInt(this.value))">
+        </div>
+        <div class="config-row">
+          <label>Permission Mode</label>
+          <select class="config-input" onchange="updateProfile('${name}', 'permission_mode', this.value)">
+            ${['bypassPermissions','default'].map(o =>
+              `<option value="${o}" ${p.permission_mode === o ? 'selected' : ''}>${o}</option>`
+            ).join('')}
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-section-header" onclick="toggleConfigSection(this)">
+        <span>Role Models</span><span class="config-chevron">▸</span>
+      </div>
+      <div class="config-section-body">
+        ${roleNames.map(r => `
+          <div class="config-row">
+            <label>${r}</label>
+            <input class="config-input" value="${(p.role_models || {})[r] || ''}"
+                   placeholder="(default: ${p.model})"
+                   onchange="updateProfileRoleModel('${name}', '${r}', this.value)">
+          </div>
+        `).join('')}
+      </div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-section-header" onclick="toggleConfigSection(this)">
+        <span>Environment Variables</span><span class="config-chevron">▸</span>
+      </div>
+      <div class="config-section-body">
+        <table class="config-table">
+          <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+          <tbody>${envRows}</tbody>
+        </table>
+        <button class="btn btn-compact" onclick="addProfileEnv('${name}')">+ Add Variable</button>
+      </div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-section-header" onclick="toggleConfigSection(this)">
+        <span>MCP Servers</span><span class="config-chevron">▸</span>
+      </div>
+      <div class="config-section-body">
+        <table class="config-table">
+          <thead><tr><th>Name</th><th>Command</th><th></th></tr></thead>
+          <tbody>${mcpRows}</tbody>
+        </table>
+        <button class="btn btn-compact" onclick="addMcpServer('${name}')">+ Add Server</button>
+      </div>
+    </div>
+
+    <div class="config-actions">
+      ${name !== _configData.active_profile
+        ? `<button class="btn btn-primary" onclick="switchProfile('${name}')">Activate this profile</button>`
+        : `<span class="config-active-label">● Active</span>`}
+      <button class="btn btn-danger" onclick="deleteProfile('${name}')">Delete</button>
+    </div>
+  </div>`;
+}
+
+function renderVaultSection() {
+  return `
+  <div class="config-section config-vault">
+    <div class="config-section-header" onclick="toggleConfigSection(this)">
+      <span>🔒 Vault (Encrypted Secrets)</span><span class="config-chevron">▸</span>
+    </div>
+    <div class="config-section-body">
+      <div id="vault-keys-list">Loading…</div>
+      <div class="config-row">
+        <input class="config-input" id="vault-new-name" placeholder="Secret name">
+        <input class="config-input" id="vault-new-value" type="password" placeholder="Secret value">
+        <button class="btn btn-compact" onclick="storeVaultSecret()">Store</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+let _selectedConfigProfile = null;
+
+function selectConfigProfile(name) {
+  _selectedConfigProfile = name;
+  renderConfigPanel();
+}
+
+function toggleConfigSection(header) {
+  const body = header.nextElementSibling;
+  const chevron = header.querySelector('.config-chevron');
+  if (body.style.display === 'none') {
+    body.style.display = '';
+    chevron.textContent = '▾';
+  } else {
+    body.style.display = 'none';
+    chevron.textContent = '▸';
+  }
+}
+
+let _updateDebounce = null;
+async function updateProfile(name, field, value) {
+  clearTimeout(_updateDebounce);
+  _updateDebounce = setTimeout(async () => {
+    const body = {};
+    body[field] = value;
+    const res = await fetch(`/api/claude-config/profiles/${name}`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (res.ok) {
+      _configData.profiles[name] = await res.json();
+    }
+  }, 500);
+}
+
+async function updateProfileRoleModel(profileName, role, value) {
+  const p = _configData.profiles[profileName];
+  const rm = {...(p.role_models || {})};
+  if (value) rm[role] = value;
+  else delete rm[role];
+  await updateProfile(profileName, 'role_models', rm);
+}
+
+async function updateProfileEnvKey(input, profileName) {
+  await _syncProfileEnv(profileName);
+}
+
+async function updateProfileEnvVal(input, profileName) {
+  await _syncProfileEnv(profileName);
+}
+
+async function _syncProfileEnv(profileName) {
+  const rows = document.querySelectorAll(`[data-env-key]`);
+  const env = {};
+  rows.forEach(row => {
+    const key = row.value;
+    const valInput = document.querySelector(`[data-env-val="${row.dataset.envKey}"]`);
+    if (key && valInput) env[key] = valInput.value;
+  });
+  await updateProfile(profileName, 'env', env);
+}
+
+async function addProfileEnv(profileName) {
+  const key = prompt('Variable name:');
+  if (!key) return;
+  const val = prompt('Value (use vault:name for secrets):');
+  if (val === null) return;
+  const p = _configData.profiles[profileName];
+  const env = {...(p.env || {}), [key]: val};
+  const res = await fetch(`/api/claude-config/profiles/${profileName}`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({env}),
+  });
+  if (res.ok) {
+    _configData.profiles[profileName] = await res.json();
+    renderConfigPanel();
+  }
+}
+
+async function removeProfileEnv(profileName, key) {
+  const p = _configData.profiles[profileName];
+  const env = {...(p.env || {})};
+  delete env[key];
+  const res = await fetch(`/api/claude-config/profiles/${profileName}`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({env}),
+  });
+  if (res.ok) {
+    _configData.profiles[profileName] = await res.json();
+    renderConfigPanel();
+  }
+}
+
+async function addMcpServer(profileName) {
+  const name = prompt('Server name:');
+  if (!name) return;
+  const command = prompt('Command (e.g. uvx):');
+  if (!command) return;
+  const argsStr = prompt('Args (comma-separated):') || '';
+  const args = argsStr.split(',').map(a => a.trim()).filter(Boolean);
+
+  const p = _configData.profiles[profileName];
+  const servers = {...(p.mcp_servers || {}), [name]: {command, args}};
+  const res = await fetch(`/api/claude-config/profiles/${profileName}`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mcp_servers: servers}),
+  });
+  if (res.ok) {
+    _configData.profiles[profileName] = await res.json();
+    renderConfigPanel();
+  }
+}
+
+async function removeMcpServer(profileName, serverName) {
+  const p = _configData.profiles[profileName];
+  const servers = {...(p.mcp_servers || {})};
+  delete servers[serverName];
+  const res = await fetch(`/api/claude-config/profiles/${profileName}`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mcp_servers: servers}),
+  });
+  if (res.ok) {
+    _configData.profiles[profileName] = await res.json();
+    renderConfigPanel();
+  }
+}
+
+async function switchProfile(name) {
+  const res = await fetch('/api/claude-config/active-profile', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  });
+  if (res.ok) {
+    _selectedConfigProfile = name;
+    await fetchClaudeConfig();
+  }
+}
+
+async function deleteProfile(name) {
+  if (!confirm(`Delete profile "${name}"?`)) return;
+  const res = await fetch(`/api/claude-config/profiles/${name}`, {method: 'DELETE'});
+  if (res.ok) {
+    _selectedConfigProfile = null;
+    await fetchClaudeConfig();
+  } else {
+    const err = await res.json();
+    alert(err.detail || 'Cannot delete');
+  }
+}
+
+async function showCreateProfileDialog() {
+  const name = prompt('Profile name:');
+  if (!name) return;
+  const res = await fetch('/api/claude-config/profiles', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  });
+  if (res.ok) {
+    _selectedConfigProfile = name;
+    await fetchClaudeConfig();
+  } else {
+    const err = await res.json();
+    alert(err.detail || 'Error');
+  }
+}
+
+async function fetchVaultKeys() {
+  const res = await fetch('/api/claude-config/vault');
+  if (!res.ok) return;
+  const keys = await res.json();
+  const el = document.getElementById('vault-keys-list');
+  if (!el) return;
+  if (keys.length === 0) {
+    el.innerHTML = '<div class="config-empty">No secrets stored</div>';
+    return;
+  }
+  el.innerHTML = keys.map(k => `
+    <div class="vault-key-row">
+      <span class="vault-key-name">${k}</span>
+      <span class="vault-key-value">••••••••</span>
+      <button class="btn-icon-sm" onclick="deleteVaultKey('${k}')">&times;</button>
+    </div>
+  `).join('');
+}
+
+async function storeVaultSecret() {
+  const nameEl = document.getElementById('vault-new-name');
+  const valueEl = document.getElementById('vault-new-value');
+  if (!nameEl.value || !valueEl.value) return;
+  await fetch('/api/claude-config/vault', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: nameEl.value, value: valueEl.value}),
+  });
+  nameEl.value = '';
+  valueEl.value = '';
+  fetchVaultKeys();
+}
+
+async function deleteVaultKey(name) {
+  if (!confirm(`Delete secret "${name}"?`)) return;
+  await fetch(`/api/claude-config/vault/${name}`, {method: 'DELETE'});
+  fetchVaultKeys();
+}
