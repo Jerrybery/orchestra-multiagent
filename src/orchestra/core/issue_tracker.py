@@ -480,7 +480,7 @@ class IssueTracker:
 
         # Load prompt
         from .orchestrator import _prompts_dir
-        prompt_file = _prompts_dir() / "discussion_analyst.md"
+        prompt_file = _prompts_dir() / "head_leader_discussion.md"
         system_prompt = prompt_file.read_text()
 
         # Inject project context
@@ -508,7 +508,7 @@ class IssueTracker:
         )
 
         handle = await self.spawner.spawn(
-            role=AgentRole.DISCUSSION_ANALYST,
+            role=AgentRole.HEAD_LEADER,
             system_prompt=system_prompt,
             task_prompt=context,
             cwd=self.project_dir,
@@ -717,7 +717,7 @@ class IssueTracker:
         await self.task_queue.add_draft_message(draft_id, "user", user_message)
 
         handle = await self.spawner.spawn(
-            role=AgentRole.DISCUSSION_ANALYST,
+            role=AgentRole.HEAD_LEADER,
             system_prompt=system_prompt,
             task_prompt=task_prompt,
             cwd=self.project_dir,
@@ -772,7 +772,7 @@ class IssueTracker:
         await self.task_queue.add_draft_message(draft_id, "user", f"[重写请求] {instruction}")
 
         handle = await self.spawner.spawn(
-            role=AgentRole.DISCUSSION_ANALYST,
+            role=AgentRole.HEAD_LEADER,
             system_prompt=system_prompt,
             task_prompt=instruction or "请根据之前的讨论重写这条草稿",
             cwd=self.project_dir,
