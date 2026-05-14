@@ -1258,6 +1258,26 @@ async def rewrite_draft(draft_id: int, msg: ChatMessage):
     return {"body": new_body}
 
 
+# ── User Identity ──────────────────────────────────────────────
+
+@app.post("/api/users/register")
+async def register_user(body: dict):
+    user_id = body.get("user_id")
+    display_name = body.get("display_name")
+    if not user_id:
+        raise HTTPException(400, "user_id is required")
+    orch = _orch()
+    user = await orch.task_queue.register_user(user_id, display_name)
+    return {"id": user.id, "display_name": user.display_name}
+
+@app.get("/api/users")
+async def list_users():
+    orch = _orch()
+    users = await orch.task_queue.list_users()
+    return [{"id": u.id, "display_name": u.display_name,
+             "last_seen_at": u.last_seen_at} for u in users]
+
+
 # ── Claude Config API ──────────────────────────────────────────
 
 @app.get("/api/claude-config")
