@@ -8,7 +8,7 @@ from orchestra.core.task_queue import TaskStatus
 
 
 @pytest.mark.asyncio
-async def test_retry_moves_task_back_to_assigned(orchestrator):
+async def test_retry_moves_task_back_to_planning(orchestrator):
     await orchestrator.task_queue.add_requirement("r1", "x")
     await orchestrator.task_queue.add_proposal(
         "p1", "r1", features=[{"id": "ta", "title": "A"}]
@@ -17,6 +17,8 @@ async def test_retry_moves_task_back_to_assigned(orchestrator):
         "ta", title="A", priority=0, depends_on=[], requirement_id="r1"
     )
     await orchestrator.task_queue.update_proposal_status("p1", "approved")
+    await orchestrator.task_queue.transition("ta", TaskStatus.PLANNING)
+    await orchestrator.task_queue.transition("ta", TaskStatus.PLANNED)
     await orchestrator.task_queue.transition("ta", TaskStatus.ASSIGNED)
     await orchestrator.task_queue.transition("ta", TaskStatus.IN_PROGRESS)
     await orchestrator.task_queue.transition(
@@ -25,7 +27,7 @@ async def test_retry_moves_task_back_to_assigned(orchestrator):
 
     await orchestrator.retry_failed_task("ta")
     t = await orchestrator.task_queue.get_task("ta")
-    assert t.status == TaskStatus.ASSIGNED
+    assert t.status == TaskStatus.PLANNING
     assert t.fail_reason is None
 
 
@@ -64,6 +66,8 @@ async def test_retry_unpauses_proposal_when_no_failed_left(orchestrator):
     await orchestrator.task_queue.update_proposal_status("p1", "approved")
     # Simulate the cascade outcome directly: both tasks FAILED, proposal paused.
     for fid in ("ta", "tb"):
+        await orchestrator.task_queue.transition(fid, TaskStatus.PLANNING)
+        await orchestrator.task_queue.transition(fid, TaskStatus.PLANNED)
         await orchestrator.task_queue.transition(fid, TaskStatus.ASSIGNED)
         await orchestrator.task_queue.transition(fid, TaskStatus.IN_PROGRESS)
         await orchestrator.task_queue.transition(

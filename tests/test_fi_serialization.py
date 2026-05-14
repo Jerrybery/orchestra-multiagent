@@ -48,6 +48,8 @@ async def test_two_fi_runs_serialize(
             )
         await orch.task_queue.update_proposal_status("p1", "approved")
         for tid in ("ta", "tb"):
+            await orch.task_queue.transition(tid, TaskStatus.PLANNING)
+            await orch.task_queue.transition(tid, TaskStatus.PLANNED)
             await orch.task_queue.transition(tid, TaskStatus.ASSIGNED)
             await orch.task_queue.transition(tid, TaskStatus.IN_PROGRESS)
             await orch.task_queue.transition(tid, TaskStatus.IMPLEMENTED)

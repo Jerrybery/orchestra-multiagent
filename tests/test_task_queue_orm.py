@@ -175,6 +175,8 @@ async def test_get_tasks_by_status(tmp_path: Path):
 
     await tq.add_task("t1", "Task One")
     await tq.add_task("t2", "Task Two")
+    await tq.transition("t2", TaskStatus.PLANNING)
+    await tq.transition("t2", TaskStatus.PLANNED)
     await tq.transition("t2", TaskStatus.ASSIGNED)
 
     ideas = await tq.get_tasks(TaskStatus.IDEA)
@@ -193,6 +195,8 @@ async def test_transition_valid(tmp_path: Path):
     tq, engine = await _make_tq(tmp_path)
 
     await tq.add_task("t1", "Transition me")
+    await tq.transition("t1", TaskStatus.PLANNING)
+    await tq.transition("t1", TaskStatus.PLANNED)
     task = await tq.transition("t1", TaskStatus.ASSIGNED, assigned_to="agent-1")
 
     assert task.status == TaskStatus.ASSIGNED
@@ -252,6 +256,8 @@ async def test_all_tasks_summary(tmp_path: Path):
     await tq.add_task("t1", "Task 1")
     await tq.add_task("t2", "Task 2")
     await tq.add_task("t3", "Task 3")
+    await tq.transition("t3", TaskStatus.PLANNING)
+    await tq.transition("t3", TaskStatus.PLANNED)
     await tq.transition("t3", TaskStatus.ASSIGNED)
 
     summary = await tq.all_tasks_summary()

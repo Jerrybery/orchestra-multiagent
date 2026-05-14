@@ -23,6 +23,12 @@ class TestStateMachine:
         """Walk a task through the entire lifecycle."""
         await task_queue.add_task("feat-001", "Test", priority=1)
 
+        t = await task_queue.transition("feat-001", TaskStatus.PLANNING)
+        assert t.status == TaskStatus.PLANNING
+
+        t = await task_queue.transition("feat-001", TaskStatus.PLANNED)
+        assert t.status == TaskStatus.PLANNED
+
         t = await task_queue.transition("feat-001", TaskStatus.ASSIGNED)
         assert t.status == TaskStatus.ASSIGNED
 
@@ -42,6 +48,8 @@ class TestStateMachine:
     async def test_reject_and_retry(self, task_queue):
         """Rejected tasks go back to ASSIGNED."""
         await task_queue.add_task("feat-001", "Test")
+        await task_queue.transition("feat-001", TaskStatus.PLANNING)
+        await task_queue.transition("feat-001", TaskStatus.PLANNED)
         await task_queue.transition("feat-001", TaskStatus.ASSIGNED)
         await task_queue.transition("feat-001", TaskStatus.IN_PROGRESS)
         await task_queue.transition("feat-001", TaskStatus.IMPLEMENTED)

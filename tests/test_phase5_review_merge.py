@@ -18,6 +18,8 @@ async def _create_implemented_task(orchestrator, task_id="feat-001"):
     """Helper: create a task and walk it to IMPLEMENTED with a real worktree."""
     tq = orchestrator.task_queue
     await tq.add_task(task_id, "Test feature")
+    await tq.transition(task_id, TaskStatus.PLANNING)
+    await tq.transition(task_id, TaskStatus.PLANNED)
     await tq.transition(task_id, TaskStatus.ASSIGNED)
     await tq.transition(task_id, TaskStatus.IN_PROGRESS)
 
@@ -67,9 +69,9 @@ class TestAcceptTask:
         await tq.transition("feat-001", TaskStatus.REVIEW)
         await orchestrator.accept_task("feat-001")
 
-        # feat-002 should have been promoted from IDEA to ASSIGNED
+        # feat-002 should have been promoted from IDEA to PLANNING
         t2 = await tq.get_task("feat-002")
-        assert t2.status == TaskStatus.ASSIGNED
+        assert t2.status == TaskStatus.PLANNING
 
 
 class TestRejectTask:
@@ -78,6 +80,8 @@ class TestRejectTask:
     async def test_reject_sends_back(self, orchestrator):
         tq = orchestrator.task_queue
         await tq.add_task("feat-001", "Test")
+        await tq.transition("feat-001", TaskStatus.PLANNING)
+        await tq.transition("feat-001", TaskStatus.PLANNED)
         await tq.transition("feat-001", TaskStatus.ASSIGNED)
         await tq.transition("feat-001", TaskStatus.IN_PROGRESS)
         await tq.transition("feat-001", TaskStatus.IMPLEMENTED)
