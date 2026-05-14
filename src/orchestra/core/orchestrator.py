@@ -139,7 +139,11 @@ class Orchestrator:
 
     def __init__(self, config: OrchestraConfig):
         self.config = config
-        self.task_queue = TaskQueue(config.orchestra_dir / "tasks.db")
+        from .db.engine import create_db_engine
+        self._engine, self._session_factory = create_db_engine(
+            orchestra_dir=config.orchestra_dir,
+        )
+        self.task_queue = TaskQueue(self._session_factory)
         self.context = ContextManager(config.orchestra_dir)
         self.worktree = WorktreeManager(config.project_dir, config.orchestra_dir / "worktrees")
         self.github = GitHubManager(config.project_dir)
@@ -211,6 +215,8 @@ class Orchestrator:
         self.context.init()
         await self.worktree.ensure_repo()
         await self.worktree.ensure_orchestra_gitignored()
+        from .db.engine import init_db
+        await init_db(self._engine)
         await self.task_queue.init()
 
         self.context.attach_db(self.task_queue)
@@ -267,6 +273,7 @@ class Orchestrator:
 
     async def close(self) -> None:
         await self.task_queue.close()
+        await self._engine.dispose()
 
     def on_event(self, callback: Callable[[str, dict], Awaitable[None]]) -> None:
         """Register an event callback for TUI or logging."""
@@ -769,14 +776,7 @@ class Orchestrator:
 
     async def _proposal_id_for_task(self, task_id: str) -> Optional[str]:
         """Return the proposal id whose features contain `task_id`, or None."""
-        async with self.task_queue._db.execute(
-            "SELECT id, features FROM proposals"
-        ) as cur:
-            async for row in cur:
-                features = json.loads(row["features"])
-                if any(f.get("id") == task_id for f in features):
-                    return row["id"]
-        return None
+        return await self.task_queue.get_proposal_for_task(task_id)
 
     async def retry_failed_task(self, task_id: str) -> None:
         """Retry a FAILED task: move it back to ASSIGNED, clear fail_reason,
