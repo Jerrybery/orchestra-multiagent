@@ -224,7 +224,11 @@ async def test_retry_endpoint_succeeds_on_failed_task(web_client_orch, orchestra
     await orchestrator.task_queue.add_task(
         "ta", title="A", priority=0, depends_on=[], requirement_id="r1"
     )
-    # Force into FAILED state so retry is permitted
+    # Walk to FAILED state so retry is permitted
+    await orchestrator.task_queue.transition("ta", TaskStatus.PLANNING)
+    await orchestrator.task_queue.transition("ta", TaskStatus.PLANNED)
+    await orchestrator.task_queue.transition("ta", TaskStatus.ASSIGNED)
+    await orchestrator.task_queue.transition("ta", TaskStatus.IN_PROGRESS)
     await orchestrator.task_queue.transition(
         "ta", TaskStatus.FAILED, fail_reason="boom"
     )
@@ -234,7 +238,7 @@ async def test_retry_endpoint_succeeds_on_failed_task(web_client_orch, orchestra
     assert resp.json() == {"status": "retrying"}
 
     t = await orchestrator.task_queue.get_task("ta")
-    assert t.status == TaskStatus.ASSIGNED
+    assert t.status == TaskStatus.PLANNING
     assert t.fail_reason is None
 
 

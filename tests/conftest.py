@@ -148,6 +148,8 @@ async def fr_task_implemented(orchestrator, tmp_path):
         "ti", title="X", priority=0, depends_on=[], requirement_id="r1"
     )
     await orchestrator.task_queue.update_proposal_status("p1", "approved")
+    await orchestrator.task_queue.transition("ti", TaskStatus.PLANNING)
+    await orchestrator.task_queue.transition("ti", TaskStatus.PLANNED)
     await orchestrator.task_queue.transition("ti", TaskStatus.ASSIGNED)
     await orchestrator.task_queue.transition("ti", TaskStatus.IN_PROGRESS)
     await orchestrator.task_queue.transition("ti", TaskStatus.IMPLEMENTED)

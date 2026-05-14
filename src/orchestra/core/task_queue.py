@@ -27,6 +27,8 @@ from .db.models import (
 
 class TaskStatus(str, enum.Enum):
     IDEA = "idea"
+    PLANNING = "planning"
+    PLANNED = "planned"
     ASSIGNED = "assigned"
     IN_PROGRESS = "in_progress"
     IMPLEMENTED = "implemented"
@@ -39,7 +41,9 @@ class TaskStatus(str, enum.Enum):
 
 
 TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
-    TaskStatus.IDEA: {TaskStatus.ASSIGNED, TaskStatus.FAILED},
+    TaskStatus.IDEA: {TaskStatus.PLANNING, TaskStatus.FAILED},
+    TaskStatus.PLANNING: {TaskStatus.PLANNED, TaskStatus.FAILED},
+    TaskStatus.PLANNED: {TaskStatus.ASSIGNED, TaskStatus.FAILED},
     TaskStatus.ASSIGNED: {TaskStatus.IN_PROGRESS, TaskStatus.FAILED},
     TaskStatus.IN_PROGRESS: {TaskStatus.IMPLEMENTED, TaskStatus.FAILED},
     TaskStatus.IMPLEMENTED: {TaskStatus.TESTING},
@@ -47,7 +51,7 @@ TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.REVIEW: {TaskStatus.ACCEPTED, TaskStatus.REJECTED},
     TaskStatus.REJECTED: {TaskStatus.ASSIGNED},
     TaskStatus.ACCEPTED: {TaskStatus.DONE},
-    TaskStatus.FAILED: {TaskStatus.ASSIGNED},
+    TaskStatus.FAILED: {TaskStatus.PLANNING},
 }
 
 
@@ -289,7 +293,7 @@ class TaskQueue:
         ready = await self.get_ready_tasks()
         promoted = []
         for task in ready:
-            t = await self.transition(task.id, TaskStatus.ASSIGNED)
+            t = await self.transition(task.id, TaskStatus.PLANNING)
             promoted.append(t)
         return promoted
 

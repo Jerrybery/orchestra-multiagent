@@ -16,13 +16,13 @@ def test_unstarted_states_can_transition_to_failed():
     assert TaskStatus.FAILED in TRANSITIONS[TaskStatus.ASSIGNED]
 
 
-def test_failed_can_recover_to_assigned():
-    assert TaskStatus.ASSIGNED in TRANSITIONS[TaskStatus.FAILED]
+def test_failed_can_recover_to_planning():
+    assert TaskStatus.PLANNING in TRANSITIONS[TaskStatus.FAILED]
 
 
 def test_failed_is_terminal_otherwise():
-    """FAILED can ONLY go back to ASSIGNED, not anywhere else."""
-    assert TRANSITIONS[TaskStatus.FAILED] == {TaskStatus.ASSIGNED}
+    """FAILED can ONLY go back to PLANNING, not anywhere else."""
+    assert TRANSITIONS[TaskStatus.FAILED] == {TaskStatus.PLANNING}
 
 
 def test_testing_can_transition_to_failed():

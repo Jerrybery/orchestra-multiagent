@@ -180,6 +180,14 @@ class Orchestrator:
             head_fn=_git_rev_parse_head,
             files_changed_fn=self._git_files_changed,
         )
+        from orchestra.core.runners.pl import PLRunner
+        pl_runner = PLRunner(
+            self.spawner,
+            task_loader=self.task_queue.get_task,
+            prompt_loader=lambda tid: self._load_prompt(
+                AgentRole.PLANNER, tid),
+        )
+
         from orchestra.core.dev_server import DevServer
         fi_runner = FIRunner(
             self.spawner,
@@ -199,7 +207,7 @@ class Orchestrator:
         )
         self.manager = AgentRunManager(
             task_queue=self.task_queue,
-            runners={"hl": hl_runner, "fr": fr_runner, "fi": fi_runner},
+            runners={"hl": hl_runner, "fr": fr_runner, "fi": fi_runner, "pl": pl_runner},
             context={"project_dir": config.project_dir,
                      "orchestra_dir": config.orchestra_dir},
             log_path_fn=lambda role, tid: str(
@@ -344,7 +352,7 @@ class Orchestrator:
             return
         siblings = await self.task_queue.get_tasks_for_proposal(proposal_id)
         for s in siblings:
-            if s.id != task_id and s.status in {TaskStatus.IDEA, TaskStatus.ASSIGNED}:
+            if s.id != task_id and s.status in {TaskStatus.IDEA, TaskStatus.PLANNING, TaskStatus.PLANNED, TaskStatus.ASSIGNED}:
                 await self.task_queue.add_auto_pause(
                     "task", s.id, caused_by_run_id=run_id,
                     reason=f"Cancelled: sibling {task_id} failed",
@@ -781,14 +789,14 @@ class Orchestrator:
         return await self.task_queue.get_proposal_for_task(task_id)
 
     async def retry_failed_task(self, task_id: str) -> None:
-        """Retry a FAILED task: move it back to ASSIGNED, clear fail_reason,
+        """Retry a FAILED task: move it back to PLANNING, clear fail_reason,
         and auto-unpause the parent proposal once no FAILED siblings remain."""
         task = await self.task_queue.get_task(task_id)
         if not task or task.status != TaskStatus.FAILED:
             raise ValueError(f"Task {task_id} is not in FAILED state")
 
         await self.task_queue.transition(
-            task_id, TaskStatus.ASSIGNED, fail_reason=None
+            task_id, TaskStatus.PLANNING, fail_reason=None
         )
         await self._emit("task_retry_started", {"task_id": task_id})
 

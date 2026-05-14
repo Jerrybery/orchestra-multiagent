@@ -24,7 +24,9 @@ async def test_fr_failure_marks_task_failed_and_pauses_proposal(orchestrator):
         )
     await orchestrator.task_queue.update_proposal_status("p1", "approved")
 
-    # Move ta IDEA → ASSIGNED → IN_PROGRESS, then trip the cascade
+    # Move ta IDEA → PLANNING → PLANNED → ASSIGNED → IN_PROGRESS, then trip the cascade
+    await orchestrator.task_queue.transition("ta", TaskStatus.PLANNING)
+    await orchestrator.task_queue.transition("ta", TaskStatus.PLANNED)
     await orchestrator.task_queue.transition("ta", TaskStatus.ASSIGNED)
     await orchestrator.task_queue.transition("ta", TaskStatus.IN_PROGRESS)
     await orchestrator._on_fr_failed_cascade("ta", run_id=1, reason="claude died")
@@ -59,8 +61,12 @@ async def test_in_progress_siblings_not_killed(orchestrator):
             fid, title="x", priority=0, depends_on=[], requirement_id="r1"
         )
     await orchestrator.task_queue.update_proposal_status("p1", "approved")
+    await orchestrator.task_queue.transition("ta", TaskStatus.PLANNING)
+    await orchestrator.task_queue.transition("ta", TaskStatus.PLANNED)
     await orchestrator.task_queue.transition("ta", TaskStatus.ASSIGNED)
     await orchestrator.task_queue.transition("ta", TaskStatus.IN_PROGRESS)
+    await orchestrator.task_queue.transition("tb", TaskStatus.PLANNING)
+    await orchestrator.task_queue.transition("tb", TaskStatus.PLANNED)
     await orchestrator.task_queue.transition("tb", TaskStatus.ASSIGNED)
     await orchestrator.task_queue.transition("tb", TaskStatus.IN_PROGRESS)
     await orchestrator._on_fr_failed_cascade("ta", run_id=1, reason="x")

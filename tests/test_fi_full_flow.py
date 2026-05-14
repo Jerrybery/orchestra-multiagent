@@ -36,6 +36,8 @@ async def _build_fi_orchestrator(git_repo, orchestra_dir, tmp_path):
         "ti", title="X", priority=0, depends_on=[], requirement_id="r1"
     )
     await orch.task_queue.update_proposal_status("p1", "approved")
+    await orch.task_queue.transition("ti", TaskStatus.PLANNING)
+    await orch.task_queue.transition("ti", TaskStatus.PLANNED)
     await orch.task_queue.transition("ti", TaskStatus.ASSIGNED)
     await orch.task_queue.transition("ti", TaskStatus.IN_PROGRESS)
     await orch.task_queue.transition("ti", TaskStatus.IMPLEMENTED)
