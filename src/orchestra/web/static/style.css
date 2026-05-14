@@ -2096,3 +2096,132 @@ body.resizing-v { cursor: row-resize; user-select: none; }
 .chat-messages { flex: 1; overflow: auto; padding: 12px; }
 .chat-input-row { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #30363d; }
 .chat-input-row textarea { flex: 1; }
+
+/* ── Config Tab ────────────────────────────────────────────── */
+
+.config-profiles { padding: 12px; }
+
+.config-profile-cards {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 16px; padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.config-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  cursor: pointer;
+  min-width: 120px;
+  position: relative;
+  transition: border-color 0.15s, background 0.15s;
+}
+.config-card:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.config-card-active { border-color: var(--accent); background: var(--bg-hover); }
+.config-card-name { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+.config-card-meta { display: flex; gap: 4px; }
+.config-card-active-dot {
+  position: absolute; top: 6px; right: 8px;
+  color: var(--accent); font-size: 10px;
+}
+.config-card-add {
+  border-style: dashed;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  color: var(--text-mute);
+}
+.config-card-add:hover { color: var(--accent); border-color: var(--accent-soft); }
+.config-add-icon { font-size: 20px; line-height: 1; }
+
+.config-badge {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-mute);
+}
+
+.config-editor { margin-top: 8px; }
+
+.config-section {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.config-section-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 12px;
+  background: var(--bg-elevated);
+  cursor: pointer;
+  font-weight: 500; font-size: 12px;
+  color: var(--text-mute);
+  user-select: none;
+}
+.config-section-header:hover { color: var(--text); }
+.config-chevron { font-size: 10px; }
+.config-section-body { padding: 10px 12px; }
+
+.config-row {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px;
+}
+.config-row label {
+  min-width: 140px; font-size: 12px;
+  color: var(--text-mute);
+}
+
+.config-input {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 5px 8px;
+  flex: 1;
+}
+.config-input:focus { border-color: var(--accent-soft); outline: none; }
+.config-input-sm { font-size: 11px; padding: 3px 6px; }
+
+.config-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.config-table th {
+  text-align: left; padding: 4px 6px;
+  color: var(--text-dim); font-weight: 500;
+  border-bottom: 1px solid var(--border-soft);
+}
+.config-table td { padding: 4px 6px; }
+
+.config-actions {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 12px; padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+.config-active-label { color: var(--accent); font-size: 12px; font-weight: 500; }
+
+.btn-danger {
+  background: transparent; border: 1px solid var(--c-rejected);
+  color: var(--c-rejected); margin-left: auto;
+}
+.btn-danger:hover { background: rgba(232,107,104,0.1); }
+
+.btn-icon-sm {
+  background: none; border: none; color: var(--text-dim);
+  cursor: pointer; padding: 2px 4px; font-size: 14px;
+}
+.btn-icon-sm:hover { color: var(--c-rejected); }
+
+.config-vault { margin-top: 16px; }
+
+.vault-key-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.vault-key-name { font-family: var(--font-mono); font-size: 12px; min-width: 120px; }
+.vault-key-value { color: var(--text-dim); font-size: 12px; flex: 1; }
+
+.config-empty { color: var(--text-dim); font-size: 12px; padding: 8px 0; }
