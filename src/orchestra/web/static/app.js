@@ -1166,6 +1166,43 @@ async function renderProposalReview(proposalId) {
   return html;
 }
 
+async function _submitProposalReview(proposalId, body, btnSelector, log) {
+  // Disable both Approve and Abandon buttons in the current detail panel
+  // so a double-click can't fire two requests (second would 400 since the
+  // proposal is no longer pending).
+  const buttons = Array.from(document.querySelectorAll('.detail-section button'))
+    .filter(b => /onclick="(approve|abandon)/i.test(b.outerHTML)
+                 || b.textContent.includes('Approve')
+                 || b.textContent.includes('Abandon'));
+  const originalLabels = buttons.map(b => b.textContent);
+  buttons.forEach(b => { b.disabled = true; });
+  try {
+    const res = await fetch(`/api/proposals/${proposalId}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+      alert(err.detail || `Failed: HTTP ${res.status}`);
+      console.error('[proposal review] failed', res.status, err);
+      return false;
+    }
+    addLogEntry(log.event, log.message);
+    await fetchGraph();
+    return true;
+  } catch (e) {
+    console.error('[proposal review] threw', e);
+    alert('Error: ' + e.message);
+    return false;
+  } finally {
+    buttons.forEach((b, i) => {
+      b.disabled = false;
+      b.textContent = originalLabels[i];
+    });
+  }
+}
+
 async function approveProposal(proposalId) {
   const checkboxes = document.querySelectorAll('.prop-feat-cb');
   const featureIds = [];
@@ -1174,30 +1211,24 @@ async function approveProposal(proposalId) {
   const createIssuesCb = document.getElementById(`approve-create-issues-${proposalId}`);
   const createIssues = createIssuesCb ? createIssuesCb.checked : autoCreateIssues;
 
-  await fetch(`/api/proposals/${proposalId}/review`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      action: 'approve',
-      feature_ids: featureIds,
-      create_issues: createIssues,
-    }),
-  });
-  addLogEntry(
-    'proposal_approved',
-    `Approved ${featureIds.length} features from ${proposalId}${createIssues ? ' (+GitHub feat issues)' : ''}`
+  await _submitProposalReview(
+    proposalId,
+    { action: 'approve', feature_ids: featureIds, create_issues: createIssues },
+    'approve',
+    {
+      event: 'proposal_approved',
+      message: `Approved ${featureIds.length} features from ${proposalId}${createIssues ? ' (+GitHub feat issues)' : ''}`,
+    },
   );
-  await fetchGraph();
 }
 
 async function abandonIdea(proposalId) {
-  await fetch(`/api/proposals/${proposalId}/review`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'reject' }),
-  });
-  addLogEntry('idea_abandoned', `Abandoned proposal ${proposalId}`);
-  await fetchGraph();
+  await _submitProposalReview(
+    proposalId,
+    { action: 'reject' },
+    'abandon',
+    { event: 'idea_abandoned', message: `Abandoned proposal ${proposalId}` },
+  );
 }
 
 function requestResplit(proposalId) {
