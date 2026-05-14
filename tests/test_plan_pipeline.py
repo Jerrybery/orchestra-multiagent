@@ -118,3 +118,93 @@ async def test_promote_ready_tasks_goes_to_planning(tmp_path):
     assert len(promoted) == 1
     assert promoted[0].status == TaskStatus.PLANNING
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_apply_success_pl_appends_plan_to_spec(tmp_path):
+    """PL success should append plan text to task.spec."""
+    tq, engine = await _make_tq(tmp_path)
+    await tq.add_requirement("r1", "test")
+    await tq.add_task("t1", "Feature A", requirement_id="r1")
+    await tq.update_task_spec("t1", "# Spec\nBuild feature A")
+    await tq.transition("t1", TaskStatus.PLANNING)
+
+    # Simulate what AgentRunManager._apply_success does for PL
+    plan_text = "## Implementation Plan\n\nStep 1: Create foo.py"
+    current = await tq.get_task("t1")
+    combined = (current.spec or "") + "\n\n---\n\n" + plan_text
+    await tq.update_task_spec("t1", combined)
+    await tq.transition("t1", TaskStatus.PLANNED)
+
+    task = await tq.get_task("t1")
+    assert task.status == TaskStatus.PLANNED
+    assert "## Implementation Plan" in task.spec
+    assert "# Spec" in task.spec
+    assert "---" in task.spec
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_auto_driver_promotes_to_planning(tmp_path):
+    """promote_ready_tasks should move IDEA → PLANNING."""
+    tq, engine = await _make_tq(tmp_path)
+    await tq.add_requirement("r1", "test")
+    await tq.add_task("t1", "Feature A", requirement_id="r1")
+
+    promoted = await tq.promote_ready_tasks()
+    assert len(promoted) == 1
+    assert promoted[0].status == TaskStatus.PLANNING
+
+    planning = await tq.get_tasks(TaskStatus.PLANNING)
+    assert len(planning) == 1
+    assert planning[0].id == "t1"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_planned_auto_promotes_to_assigned(tmp_path):
+    """PLANNED tasks can be promoted to ASSIGNED."""
+    tq, engine = await _make_tq(tmp_path)
+    await tq.add_requirement("r1", "test")
+    await tq.add_task("t1", "Feature A", requirement_id="r1")
+    await tq.transition("t1", TaskStatus.PLANNING)
+    await tq.transition("t1", TaskStatus.PLANNED)
+
+    planned = await tq.get_tasks(TaskStatus.PLANNED)
+    for task in planned:
+        await tq.transition(task.id, TaskStatus.ASSIGNED)
+
+    t = await tq.get_task("t1")
+    assert t.status == TaskStatus.ASSIGNED
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_plan_appended_to_spec_survives_full_pipeline(tmp_path):
+    """Spec + plan combined text is preserved through the full pipeline."""
+    tq, engine = await _make_tq(tmp_path)
+    await tq.add_requirement("r1", "test")
+    await tq.add_task("t1", "Feature A", requirement_id="r1")
+
+    # Set spec
+    await tq.update_task_spec("t1", "# Acceptance Criteria\n- Feature works")
+
+    # Go through planning
+    await tq.transition("t1", TaskStatus.PLANNING)
+
+    # Append plan
+    current = await tq.get_task("t1")
+    combined = current.spec + "\n\n---\n\n## Implementation Plan\nModify src/foo.py"
+    await tq.update_task_spec("t1", combined)
+    await tq.transition("t1", TaskStatus.PLANNED)
+
+    # Continue through pipeline
+    await tq.transition("t1", TaskStatus.ASSIGNED)
+    await tq.transition("t1", TaskStatus.IN_PROGRESS)
+    await tq.transition("t1", TaskStatus.IMPLEMENTED)
+
+    # Verify spec+plan still intact
+    task = await tq.get_task("t1")
+    assert "# Acceptance Criteria" in task.spec
+    assert "## Implementation Plan" in task.spec
+    await engine.dispose()
