@@ -46,6 +46,16 @@ Done ── downstream features unblocked, cycle continues
 | **Feature Realizer** | Sonnet | Implements one feature in an isolated worktree. Addresses rejection feedback on retry. |
 | **Feature Interpreter** | Sonnet | Reviews implementation against spec, runs tests, writes verification report. |
 
+### Architecture
+
+Agents are decoupled into three layers:
+
+- **Runners** (`runners/hl.py`, `fr.py`, `fi.py`) — pure execution: spawn agent, wait, parse result. No state machine, no DB writes.
+- **AgentRunManager** — single execution path for all runs (auto + manual). Creates `agent_runs` records, acquires FI global lock, drives state machine on finish, handles auto-pause on failures.
+- **AutoDriver** — watches for unblocked tasks and auto-dispatches the appropriate runner.
+
+This separation means adding a new agent role requires only a new Runner class — the execution, state tracking, and scheduling infrastructure is shared.
+
 ## Features
 
 ### Discussion Tracking
@@ -80,6 +90,27 @@ Done ── downstream features unblocked, cycle continues
 - **Tracked branch** — auto-fetches and checks out the latest on startup
 - **Checkout with safety** — shows dirty files and unpushed commits before force-switching
 
+### Claude Config Profiles
+
+- **Named profiles** — define multiple Claude CLI configurations (model, max_turns, command) in `orchestra.yaml`
+- **Dashboard Configuration tab** — create, edit, switch profiles from the web UI
+- **Vault integration** — encrypted storage for API keys and secrets (`~/.orchestra-vault-key`)
+- **Per-spawn injection** — active profile settings automatically applied to every agent spawn
+
+### Database & Multi-User
+
+- **Dual database backend** — SQLite (local default) and PostgreSQL (team server), switchable via config
+- **SQLAlchemy ORM** — 13 models replace 942 lines of hand-written SQL; Alembic migrations included
+- **User identity** — self-registration (`POST /api/users/register`), `user_id` tracking on all write operations
+- **Config priority** — `ORCHESTRA_DATABASE_URL` env > `orchestra.yaml` `database.url` > SQLite default
+- **Backward compatible** — existing SQLite databases work without migration
+
+### Docker Deployment
+
+- **One-command deploy** — `docker compose up` starts PostgreSQL 16 + Orchestra Dashboard
+- **Health checks** — Dashboard waits for PG readiness before starting
+- **Configurable** — port and password via `.env` file (`deploy/.env.example`)
+
 ### Git Integration
 
 - **`.orchestra/` auto-gitignored** — survives branch switches, auto-recovers if clobbered
@@ -88,6 +119,8 @@ Done ── downstream features unblocked, cycle continues
 - **Conflict handling** — merge conflicts trigger automatic rebase; pipeline continues
 
 ## Quick Start
+
+### Local (SQLite)
 
 ```bash
 pip install -e .
@@ -105,6 +138,23 @@ python -m orchestra.main submit "Build a user settings page" --project /path/to/
 python -m orchestra.main run --project /path/to/repo          # start the orchestration loop
 ```
 
+### Team Server (Docker + PostgreSQL)
+
+```bash
+cd deploy
+cp .env.example .env        # edit POSTGRES_PASSWORD
+docker compose up -d
+# open http://server:8420
+```
+
+Local developers connect by adding to `orchestra.yaml`:
+
+```yaml
+database:
+  url: postgresql+asyncpg://orchestra:pass@server:5432/orchestra
+  user_id: "your-name"
+```
+
 ## Configuration
 
 `orchestra.yaml` in the project root:
@@ -115,7 +165,13 @@ concurrency:
   feature_realizer: 2
   feature_interpreter: 1
 
+database: sqlite                          # or:
+# database:
+#   url: postgresql+asyncpg://orchestra:pass@server:5432/orchestra
+#   user_id: "jerry"
+
 claude:
+  active_profile: dev-fast
   command: claude
   max_turns: 50
 
@@ -133,3 +189,5 @@ watch:
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
 - [GitHub CLI](https://cli.github.com/) (for issue/PR features)
 - Python 3.11+
+- PostgreSQL 16+ (optional, for team server mode)
+- Docker & Docker Compose (optional, for containerized deployment)
