@@ -132,6 +132,7 @@ class OrchestraConfig:
     # submit_requirement / approve_proposal. UI/API can override per-call.
     claude_config_mgr: Optional[ClaudeConfigManager] = None
     vault: Optional[Vault] = None
+    database_config: Optional[dict | str] = None
 
 
 class Orchestrator:
@@ -141,6 +142,7 @@ class Orchestrator:
         self.config = config
         from .db.engine import create_db_engine
         self._engine, self._session_factory = create_db_engine(
+            database_config=config.database_config,
             orchestra_dir=config.orchestra_dir,
         )
         self.task_queue = TaskQueue(self._session_factory)

@@ -38,6 +38,8 @@ def load_config(config_path: Path, project_dir: Path) -> OrchestraConfig:
 
     profile = config_mgr.active_profile()
 
+    database_config = raw.get("database", "sqlite")
+
     return OrchestraConfig(
         project_dir=project_dir,
         orchestra_dir=orchestra_dir,
@@ -49,6 +51,7 @@ def load_config(config_path: Path, project_dir: Path) -> OrchestraConfig:
         model=profile.model,
         claude_config_mgr=config_mgr,
         vault=vault,
+        database_config=database_config,
     )
 
 
