@@ -19,6 +19,8 @@ from ..core.task_queue import TaskStatus
 from ..core.issue_tracker import WatchConfig
 from ..core.run_config import RunConfig, detect_run_config
 from ..core.dev_server import DevServer, DevServerStartupError
+from ..core.claude_config import ClaudeConfigManager, ClaudeProfile
+from ..core.vault import Vault
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -56,6 +58,47 @@ def _orch() -> Orchestrator:
 
 def _is_initialized() -> bool:
     return _orchestrator is not None
+
+
+def _config_mgr() -> ClaudeConfigManager:
+    orch = _orch()
+    if not orch.config.claude_config_mgr:
+        raise HTTPException(503, "ClaudeConfigManager not initialized")
+    return orch.config.claude_config_mgr
+
+
+def _vault() -> Vault:
+    orch = _orch()
+    if not orch.config.vault:
+        raise HTTPException(503, "Vault not initialized")
+    return orch.config.vault
+
+
+def _mask_env(env: dict[str, str]) -> dict[str, str]:
+    SECRET_SUFFIXES = ("_KEY", "_SECRET", "_TOKEN", "_PASSWORD")
+    masked = {}
+    for k, v in env.items():
+        if v.startswith("vault:"):
+            masked[k] = v
+        elif any(k.upper().endswith(s) for s in SECRET_SUFFIXES):
+            masked[k] = "••••••••"
+        else:
+            masked[k] = v
+    return masked
+
+
+def _profile_summary(p: ClaudeProfile) -> dict:
+    return {
+        "name": p.name,
+        "provider": p.provider,
+        "model": p.model,
+        "max_turns": p.max_turns,
+        "permission_mode": p.permission_mode,
+        "api_base_url": p.api_base_url,
+        "env": _mask_env(p.env),
+        "mcp_servers": p.mcp_servers,
+        "role_models": p.role_models,
+    }
 
 
 # ── Models ──────────────────────────────────────────────────────
@@ -98,6 +141,38 @@ class RunConfigPayload(BaseModel):
     ready_signal: Optional[str] = None
     base_url: str = "http://localhost:3000"
     startup_timeout: int = 60
+
+
+class ProfileCreate(BaseModel):
+    name: str
+    provider: str = "anthropic"
+    model: str = "sonnet"
+    max_turns: int = 50
+    permission_mode: str = "bypassPermissions"
+    api_base_url: Optional[str] = None
+    env: dict[str, str] = {}
+    mcp_servers: dict[str, dict] = {}
+    role_models: dict[str, str] = {}
+
+
+class ProfileUpdate(BaseModel):
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    max_turns: Optional[int] = None
+    permission_mode: Optional[str] = None
+    api_base_url: Optional[str] = None
+    env: Optional[dict[str, str]] = None
+    mcp_servers: Optional[dict[str, dict]] = None
+    role_models: Optional[dict[str, str]] = None
+
+
+class ActiveProfileSwitch(BaseModel):
+    name: str
+
+
+class VaultStore(BaseModel):
+    name: str
+    value: str
 
 
 # ── Routes ──────────────────────────────────────────────────────
@@ -1181,6 +1256,103 @@ async def rewrite_draft(draft_id: int, msg: ChatMessage):
     if not new_body:
         raise HTTPException(500, "Agent produced no output")
     return {"body": new_body}
+
+
+# ── Claude Config API ──────────────────────────────────────────
+
+@app.get("/api/claude-config")
+async def get_claude_config():
+    mgr = _config_mgr()
+    return {
+        "command": mgr.config.command,
+        "active_profile": mgr.config.active_profile,
+        "profiles": {
+            name: _profile_summary(p)
+            for name, p in mgr.config.profiles.items()
+        },
+    }
+
+
+@app.get("/api/claude-config/profiles")
+async def list_profiles():
+    mgr = _config_mgr()
+    return [
+        {"name": p.name, "provider": p.provider, "model": p.model}
+        for p in mgr.config.profiles.values()
+    ]
+
+
+@app.post("/api/claude-config/profiles")
+async def create_profile(req: ProfileCreate):
+    mgr = _config_mgr()
+    profile = ClaudeProfile(
+        name=req.name, provider=req.provider, model=req.model,
+        max_turns=req.max_turns, permission_mode=req.permission_mode,
+        api_base_url=req.api_base_url, env=req.env,
+        mcp_servers=req.mcp_servers, role_models=req.role_models,
+    )
+    try:
+        mgr.create_profile(req.name, profile)
+    except ValueError:
+        raise HTTPException(409, f"Profile '{req.name}' already exists")
+    return _profile_summary(profile)
+
+
+@app.get("/api/claude-config/profiles/{name}")
+async def get_profile(name: str):
+    mgr = _config_mgr()
+    if name not in mgr.config.profiles:
+        raise HTTPException(404, f"Profile '{name}' not found")
+    return _profile_summary(mgr.config.profiles[name])
+
+
+@app.put("/api/claude-config/profiles/{name}")
+async def update_profile(name: str, req: ProfileUpdate):
+    mgr = _config_mgr()
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    try:
+        mgr.update_profile(name, updates)
+    except KeyError:
+        raise HTTPException(404, f"Profile '{name}' not found")
+    return _profile_summary(mgr.config.profiles[name])
+
+
+@app.delete("/api/claude-config/profiles/{name}", status_code=204)
+async def delete_profile(name: str):
+    mgr = _config_mgr()
+    try:
+        mgr.delete_profile(name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/claude-config/active-profile")
+async def switch_active_profile(req: ActiveProfileSwitch):
+    mgr = _config_mgr()
+    try:
+        mgr.switch_profile(req.name)
+    except KeyError:
+        raise HTTPException(404, f"Profile '{req.name}' not found")
+    return {"name": mgr.config.active_profile}
+
+
+@app.get("/api/claude-config/vault")
+async def list_vault_keys():
+    v = _vault()
+    return v.list_keys()
+
+
+@app.post("/api/claude-config/vault")
+async def store_vault_secret(req: VaultStore):
+    v = _vault()
+    v.store(req.name, req.value)
+    return {"name": req.name}
+
+
+@app.delete("/api/claude-config/vault/{name}", status_code=204)
+async def delete_vault_secret(name: str):
+    v = _vault()
+    v.delete(name)
 
 
 @app.get("/api/events/stream")
