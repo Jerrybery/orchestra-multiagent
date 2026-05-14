@@ -65,6 +65,8 @@ async def test_transition_persists_fail_reason(tmp_path: Path):
     await q.add_proposal("p1", "r1", features=[{"id": "t1", "title": "x"}])
     await q.add_task("t1", "x", requirement_id="r1")
     # Walk to IN_PROGRESS, then FAILED with reason
+    await q.transition("t1", TaskStatus.PLANNING)
+    await q.transition("t1", TaskStatus.PLANNED)
     await q.transition("t1", TaskStatus.ASSIGNED)
     await q.transition("t1", TaskStatus.IN_PROGRESS)
     await q.transition("t1", TaskStatus.FAILED, fail_reason="boom")

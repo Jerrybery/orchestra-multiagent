@@ -69,7 +69,7 @@ class TestDependencyPromotion:
 
     @pytest.mark.asyncio
     async def test_promote_no_deps(self, orchestrator):
-        """Tasks with no dependencies should promote IDEA → ASSIGNED."""
+        """Tasks with no dependencies should promote IDEA → PLANNING."""
         tq = orchestrator.task_queue
         await _setup_proposal(tq)
         await orchestrator.approve_proposal("prop-t")
@@ -78,7 +78,7 @@ class TestDependencyPromotion:
         # Only feat-001 has no deps
         assert len(promoted) == 1
         assert promoted[0].id == "feat-001"
-        assert promoted[0].status == TaskStatus.ASSIGNED
+        assert promoted[0].status == TaskStatus.PLANNING
 
     @pytest.mark.asyncio
     async def test_blocked_tasks_not_promoted(self, orchestrator):
@@ -102,6 +102,8 @@ class TestDependencyPromotion:
         await tq.promote_ready_tasks()
 
         # Manually walk feat-001 through to DONE
+        await tq.transition("feat-001", TaskStatus.PLANNED)
+        await tq.transition("feat-001", TaskStatus.ASSIGNED)
         await tq.transition("feat-001", TaskStatus.IN_PROGRESS)
         await tq.transition("feat-001", TaskStatus.IMPLEMENTED)
         await tq.transition("feat-001", TaskStatus.TESTING)

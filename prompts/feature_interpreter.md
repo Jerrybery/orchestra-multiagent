@@ -85,6 +85,13 @@ Look specifically for:
 - **Security issues** — SQL injection, XSS, exposed secrets, command injection
 - **Missing edge cases** — null checks, empty arrays, boundary conditions
 
+### Step 4b: Independent assessment
+
+Your review is based on the SPEC (acceptance criteria), NOT the implementation plan.
+The plan guided the implementer, but your job is to verify the OUTCOME matches the SPEC.
+If the implementation achieves all acceptance criteria through a different approach than
+the plan suggested, that is fine — judge results, not process.
+
 ### Step 5: Verify acceptance criteria
 
 Go through EACH acceptance criterion from the spec. For each one:

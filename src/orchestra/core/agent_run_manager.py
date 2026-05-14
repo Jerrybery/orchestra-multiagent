@@ -183,6 +183,19 @@ class AgentRunManager:
                 )
             return
 
+        if ctx.role == "pl":
+            plan_text = snap.get("plan", "")
+            if plan_text:
+                task = await self.task_queue.get_task(ctx.target_id)
+                current_spec = task.spec if task else ""
+                combined = (current_spec or "") + "\n\n---\n\n" + plan_text
+                await self.task_queue.update_task_spec(ctx.target_id, combined)
+            if ctx.mode == "auto":
+                await self.task_queue.transition(
+                    ctx.target_id, TaskStatus.PLANNED,
+                )
+            return
+
         if ctx.mode != "auto":
             return  # FR/FI manual: don't touch state machine
 
@@ -277,6 +290,8 @@ class AutoDriver:
     async def _tick(self) -> None:
         await self._tick_hl()
         await self.task_queue.promote_ready_tasks()
+        await self._tick_pl()
+        await self._tick_planned()
         await self._tick_fr()
         await self._tick_fi()
 
@@ -297,6 +312,30 @@ class AutoDriver:
                 role="hl", target_kind="requirement",
                 target_id=req.id, mode="auto",
             )
+
+    async def _tick_pl(self) -> None:
+        """Auto-submit plan generation for PLANNING tasks."""
+        planning = await self.task_queue.get_tasks(TaskStatus.PLANNING)
+        running = await self.task_queue.list_agent_runs(role="pl", status="running")
+        running_targets = {r.target_id for r in running}
+        for task in planning:
+            if task.id in running_targets:
+                continue
+            if await self.task_queue.is_auto_paused("task", task.id):
+                continue
+            if self.manager.running_count("pl") >= self.config.max_hl:
+                break
+            await self.manager.submit(
+                role="pl", target_kind="task",
+                target_id=task.id, mode="auto",
+            )
+
+    async def _tick_planned(self) -> None:
+        """Auto-promote PLANNED -> ASSIGNED."""
+        planned = await self.task_queue.get_tasks(TaskStatus.PLANNED)
+        for task in planned:
+            if not await self.task_queue.is_auto_paused("task", task.id):
+                await self.task_queue.transition(task.id, TaskStatus.ASSIGNED)
 
     async def _tick_fr(self) -> None:
         assigned = await self.task_queue.get_tasks(TaskStatus.ASSIGNED)
