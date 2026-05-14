@@ -88,7 +88,23 @@ async function fetchActiveBranches(limit = 200) {
   return await res.json();
 }
 
-// ── Branch picker ───────────────────────────────────────────────
+// ── Branch picker (collapsible) ─────────────────────────────────
+
+let _branchPickerExpanded = false;
+let _branchPickerSearch = '';
+// Cache of /api/branches/active so re-renders don't re-fetch on every keystroke.
+let _branchPickerCache = null;
+let _branchPickerCacheAt = 0;
+
+async function _getBranchPickerCache() {
+  const now = Date.now();
+  if (_branchPickerCache && (now - _branchPickerCacheAt) < 60_000) {
+    return _branchPickerCache;
+  }
+  _branchPickerCache = await fetchActiveBranches(200);
+  _branchPickerCacheAt = now;
+  return _branchPickerCache;
+}
 
 function renderBranchPicker() {
   const host = document.getElementById('branch-picker');
@@ -97,184 +113,170 @@ function renderBranchPicker() {
 
   const visible = graphData.visible_branches || [];
 
-  const label = document.createElement('span');
-  label.className = 'branch-picker-label';
-  label.textContent = 'Branches:';
-  host.appendChild(label);
+  // Collapsed header — always visible, compact one-liner
+  const toggle = document.createElement('button');
+  toggle.className = 'branch-picker-toggle';
+  toggle.type = 'button';
 
-  if (!visible.length) {
-    const empty = document.createElement('span');
-    empty.className = 'branch-picker-empty';
-    empty.textContent = '(default)';
-    host.appendChild(empty);
+  const arrow = document.createElement('span');
+  arrow.className = 'bp-arrow';
+  arrow.textContent = _branchPickerExpanded ? '▾' : '▸';
+  toggle.appendChild(arrow);
+
+  const lbl = document.createElement('span');
+  lbl.className = 'bp-label';
+  lbl.textContent = 'Branches';
+  toggle.appendChild(lbl);
+
+  const count = document.createElement('span');
+  count.className = 'bp-count';
+  count.textContent = `(${visible.length})`;
+  toggle.appendChild(count);
+
+  if (!_branchPickerExpanded && visible.length) {
+    const preview = document.createElement('span');
+    preview.className = 'bp-preview';
+    const head = visible.slice(0, 3).map(shortenBranchName).join(', ');
+    preview.textContent = visible.length > 3 ? `${head}, …` : head;
+    preview.title = visible.join('\n');
+    toggle.appendChild(preview);
   }
 
-  for (const name of visible) {
-    const chip = document.createElement('span');
-    chip.className = 'branch-chip';
-    chip.title = name;  // full name on hover
-    const dot = document.createElement('span');
-    dot.className = 'branch-chip-dot';
-    chip.appendChild(dot);
-    const text = document.createElement('span');
-    text.className = 'branch-chip-text';
-    text.textContent = shortenBranchName(name);
-    chip.appendChild(text);
-
-    const close = document.createElement('span');
-    close.className = 'chip-close';
-    close.textContent = '×';
-    close.title = `Hide ${name}`;
-    close.addEventListener('click', (e) => {
-      e.stopPropagation();
-      removeBranchFromFilter(name);
-    });
-    chip.appendChild(close);
-    host.appendChild(chip);
-  }
-
-  const addBtn = document.createElement('button');
-  addBtn.className = 'branch-add-btn';
-  addBtn.textContent = '+ add';
-  addBtn.addEventListener('click', openBranchPickerModal);
-  host.appendChild(addBtn);
+  toggle.addEventListener('click', () => {
+    _branchPickerExpanded = !_branchPickerExpanded;
+    renderBranchPicker();
+  });
+  host.appendChild(toggle);
 
   if (currentBranchFilter !== null) {
     const reset = document.createElement('button');
     reset.className = 'branch-reset-btn';
+    reset.type = 'button';
     reset.textContent = 'reset';
     reset.title = 'Restore default branch selection';
-    reset.addEventListener('click', () => {
+    reset.addEventListener('click', (e) => {
+      e.stopPropagation();
       currentBranchFilter = null;
+      _branchPickerExpanded = false;
       fetchGraph();
     });
     host.appendChild(reset);
   }
-}
 
-function removeBranchFromFilter(name) {
-  // Bootstrap currentBranchFilter from whatever the backend last gave us
-  // so the user starts editing the smart default rather than nothing.
-  const base = currentBranchFilter !== null
-    ? currentBranchFilter
-    : (graphData.visible_branches || []);
-  const next = base.filter(b => b !== name);
-  // Allow empty list — backend will fall back to --all for an empty
-  // filter only when the user has never picked anything. When the user
-  // explicitly empties their selection, we send ?branches= (empty) which
-  // the backend interprets as "no branches given → smart default".
-  // To avoid that surprise, keep at least one branch; if the user
-  // removes the last one, reset to default.
-  if (next.length === 0) {
-    currentBranchFilter = null;
-  } else {
-    currentBranchFilter = next;
-  }
-  fetchGraph();
-}
+  if (!_branchPickerExpanded) return;
 
-async function openBranchPickerModal() {
-  const existing = document.getElementById('branch-picker-modal');
-  if (existing) existing.remove();
-
-  const active = await fetchActiveBranches(200);
-  const visible = new Set(graphData.visible_branches || []);
-
-  const modal = document.createElement('div');
-  modal.id = 'branch-picker-modal';
-  modal.className = 'branch-picker-modal';
-
-  const inner = document.createElement('div');
-  inner.className = 'branch-picker-modal-inner';
-
-  const header = document.createElement('div');
-  header.className = 'branch-picker-modal-header';
-  header.innerHTML = '<b>Add branch</b>';
-  const closeX = document.createElement('span');
-  closeX.className = 'branch-picker-modal-close';
-  closeX.textContent = '×';
-  closeX.addEventListener('click', () => modal.remove());
-  header.appendChild(closeX);
-  inner.appendChild(header);
+  // Expanded panel: search + checkbox list + apply
+  const panel = document.createElement('div');
+  panel.className = 'branch-picker-panel';
 
   const search = document.createElement('input');
   search.type = 'text';
   search.placeholder = 'Search branches…';
   search.className = 'branch-picker-search';
-  inner.appendChild(search);
+  search.value = _branchPickerSearch;
+  panel.appendChild(search);
 
   const list = document.createElement('div');
   list.className = 'branch-picker-list';
-  inner.appendChild(list);
-
-  function renderList(filter = '') {
-    list.innerHTML = '';
-    const q = filter.toLowerCase();
-    const matches = active.filter(b => !q || b.name.toLowerCase().includes(q));
-    if (!matches.length) {
-      const empty = document.createElement('div');
-      empty.className = 'branch-picker-list-empty';
-      empty.textContent = 'No matching branches';
-      list.appendChild(empty);
-      return;
-    }
-    for (const b of matches.slice(0, 100)) {
-      const row = document.createElement('label');
-      row.className = 'branch-picker-row';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = visible.has(b.name);
-      cb.addEventListener('change', () => {
-        if (cb.checked) visible.add(b.name);
-        else visible.delete(b.name);
-      });
-      row.appendChild(cb);
-      const nameSpan = document.createElement('span');
-      nameSpan.className = 'branch-picker-row-name';
-      nameSpan.textContent = b.name;
-      if (b.is_remote) {
-        const r = document.createElement('span');
-        r.className = 'branch-picker-row-tag';
-        r.textContent = 'remote';
-        nameSpan.appendChild(r);
-      }
-      row.appendChild(nameSpan);
-      const meta = document.createElement('span');
-      meta.className = 'branch-picker-row-meta';
-      meta.textContent = (b.last_commit_at || '').slice(0, 10);
-      row.appendChild(meta);
-      list.appendChild(row);
-    }
-  }
-  renderList();
-  search.addEventListener('input', () => renderList(search.value));
+  list.innerHTML = '<div class="branch-picker-list-empty">Loading…</div>';
+  panel.appendChild(list);
 
   const footer = document.createElement('div');
-  footer.className = 'branch-picker-modal-footer';
+  footer.className = 'branch-picker-footer';
+  const selCount = document.createElement('span');
+  selCount.className = 'branch-picker-footer-info';
+  footer.appendChild(selCount);
   const apply = document.createElement('button');
-  apply.className = 'btn';
+  apply.className = 'btn btn-compact';
+  apply.type = 'button';
   apply.textContent = 'Apply';
+  footer.appendChild(apply);
+  panel.appendChild(footer);
+
+  host.appendChild(panel);
+
+  // Stage selection in a local Set, only commit on Apply
+  const selected = new Set(visible);
+
+  function refreshFooter() {
+    selCount.textContent = `${selected.size} selected · cap 30`;
+  }
+  refreshFooter();
+
+  (async function loadAndRender() {
+    let active;
+    try {
+      active = await _getBranchPickerCache();
+    } catch (e) {
+      list.innerHTML = '<div class="branch-picker-list-empty">Failed to load branches</div>';
+      return;
+    }
+
+    // Merge: currently-visible (may not all be in "active" if user picked old) + active sorted
+    const seen = new Set();
+    const combined = [];
+    for (const v of visible) {
+      seen.add(v);
+      combined.push({ name: v, last_commit_at: '', is_remote: v.startsWith('origin/') || v.startsWith('remotes/'), _pinned: true });
+    }
+    for (const b of active) {
+      if (seen.has(b.name)) continue;
+      combined.push(b);
+    }
+
+    function renderList() {
+      list.innerHTML = '';
+      const q = _branchPickerSearch.toLowerCase();
+      const matches = q ? combined.filter(b => b.name.toLowerCase().includes(q)) : combined;
+      if (!matches.length) {
+        list.innerHTML = '<div class="branch-picker-list-empty">No matching branches</div>';
+        return;
+      }
+      for (const b of matches.slice(0, 200)) {
+        const row = document.createElement('label');
+        row.className = 'branch-picker-row';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = selected.has(b.name);
+        cb.addEventListener('change', () => {
+          if (cb.checked) selected.add(b.name);
+          else selected.delete(b.name);
+          refreshFooter();
+        });
+        row.appendChild(cb);
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'branch-picker-row-name';
+        nameSpan.textContent = b.name;
+        nameSpan.title = b.name;
+        if (b.is_remote) {
+          const r = document.createElement('span');
+          r.className = 'branch-picker-row-tag';
+          r.textContent = 'remote';
+          nameSpan.appendChild(r);
+        }
+        row.appendChild(nameSpan);
+        if (b.last_commit_at) {
+          const meta = document.createElement('span');
+          meta.className = 'branch-picker-row-meta';
+          meta.textContent = b.last_commit_at.slice(0, 10);
+          row.appendChild(meta);
+        }
+        list.appendChild(row);
+      }
+    }
+    renderList();
+    search.addEventListener('input', () => {
+      _branchPickerSearch = search.value;
+      renderList();
+    });
+  })();
+
   apply.addEventListener('click', () => {
-    // Cap at 30 — beyond that the graph becomes unreadable.
-    const picked = Array.from(visible).slice(0, 30);
+    const picked = Array.from(selected).slice(0, 30);
     currentBranchFilter = picked.length ? picked : null;
-    modal.remove();
+    _branchPickerExpanded = false;
     fetchGraph();
   });
-  const cancel = document.createElement('button');
-  cancel.className = 'btn btn-ghost';
-  cancel.textContent = 'Cancel';
-  cancel.addEventListener('click', () => modal.remove());
-  footer.appendChild(cancel);
-  footer.appendChild(apply);
-  inner.appendChild(footer);
-
-  modal.appendChild(inner);
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) modal.remove();
-  });
-  document.body.appendChild(modal);
-  search.focus();
 }
 
 async function fetchTaskDetail(taskId) {
