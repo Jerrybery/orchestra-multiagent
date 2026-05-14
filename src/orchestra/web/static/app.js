@@ -15,14 +15,27 @@ const STATUS_COLORS = {
   rejected:          '#f85149',
 };
 
-// Branch colors for git graph (cycle through these)
-const BRANCH_COLORS = ['#f97583','#79c0ff','#56d364','#d2a8ff','#ffa657','#ff7b72','#7ee787','#d29922'];
+// Branch colors for git graph — hues stepped ~45° apart for max contrast
+// (the old palette had two near-identical reds + two near-identical greens,
+// making adjacent lanes hard to tell apart).
+const BRANCH_COLORS = [
+  '#58a6ff',  // blue (main default)
+  '#f85149',  // red
+  '#3fb950',  // green
+  '#bc8cff',  // purple
+  '#f0883e',  // orange
+  '#56d4d2',  // cyan
+  '#ff7eb6',  // pink
+  '#e3b341',  // yellow
+];
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-let graphData = { nodes: [], edges: [], branches: [], commits: [], proposals: [] };
+let graphData = { nodes: [], edges: [], branches: [], commits: [], proposals: [], visible_branches: [] };
 let selectedNodeId = null;
 let tooltipEl = null;
+// null = use backend's smart default; an array = explicit user picks
+let currentBranchFilter = null;
 
 // ── Init tooltip element ────────────────────────────────────────
 function initTooltip() {
@@ -51,15 +64,219 @@ function hideTooltip() {
 // ── Fetch helpers ───────────────────────────────────────────────
 
 async function fetchGraph() {
-  const res = await fetch('/api/graph');
+  let url = '/api/graph';
+  if (currentBranchFilter && currentBranchFilter.length) {
+    url += '?branches=' + encodeURIComponent(currentBranchFilter.join(','));
+  }
+  const res = await fetch(url);
+  if (!res.ok) return;  // 503 during disconnect — skip render
   graphData = await res.json();
   renderGraph();
+  renderBranchPicker();
 }
 
 async function fetchAgents() {
   const res = await fetch('/api/agents');
+  if (!res.ok) return;
   const agents = await res.json();
   renderAgents(agents);
+}
+
+async function fetchActiveBranches(limit = 200) {
+  const res = await fetch(`/api/branches/active?limit=${limit}`);
+  if (!res.ok) return [];
+  return await res.json();
+}
+
+// ── Branch picker (collapsible) ─────────────────────────────────
+
+let _branchPickerExpanded = false;
+let _branchPickerSearch = '';
+// Cache of /api/branches/active so re-renders don't re-fetch on every keystroke.
+let _branchPickerCache = null;
+let _branchPickerCacheAt = 0;
+
+async function _getBranchPickerCache() {
+  const now = Date.now();
+  if (_branchPickerCache && (now - _branchPickerCacheAt) < 60_000) {
+    return _branchPickerCache;
+  }
+  _branchPickerCache = await fetchActiveBranches(200);
+  _branchPickerCacheAt = now;
+  return _branchPickerCache;
+}
+
+function renderBranchPicker() {
+  const host = document.getElementById('branch-picker');
+  if (!host) return;
+  host.innerHTML = '';
+
+  const visible = graphData.visible_branches || [];
+
+  // Collapsed header — always visible, compact one-liner
+  const toggle = document.createElement('button');
+  toggle.className = 'branch-picker-toggle';
+  toggle.type = 'button';
+
+  const arrow = document.createElement('span');
+  arrow.className = 'bp-arrow';
+  arrow.textContent = _branchPickerExpanded ? '▾' : '▸';
+  toggle.appendChild(arrow);
+
+  const lbl = document.createElement('span');
+  lbl.className = 'bp-label';
+  lbl.textContent = 'Branches';
+  toggle.appendChild(lbl);
+
+  const count = document.createElement('span');
+  count.className = 'bp-count';
+  count.textContent = `(${visible.length})`;
+  toggle.appendChild(count);
+
+  if (!_branchPickerExpanded && visible.length) {
+    const preview = document.createElement('span');
+    preview.className = 'bp-preview';
+    const head = visible.slice(0, 3).map(shortenBranchName).join(', ');
+    preview.textContent = visible.length > 3 ? `${head}, …` : head;
+    preview.title = visible.join('\n');
+    toggle.appendChild(preview);
+  }
+
+  toggle.addEventListener('click', () => {
+    _branchPickerExpanded = !_branchPickerExpanded;
+    renderBranchPicker();
+  });
+  host.appendChild(toggle);
+
+  if (currentBranchFilter !== null) {
+    const reset = document.createElement('button');
+    reset.className = 'branch-reset-btn';
+    reset.type = 'button';
+    reset.textContent = 'reset';
+    reset.title = 'Restore default branch selection';
+    reset.addEventListener('click', (e) => {
+      e.stopPropagation();
+      currentBranchFilter = null;
+      _branchPickerExpanded = false;
+      fetchGraph();
+    });
+    host.appendChild(reset);
+  }
+
+  if (!_branchPickerExpanded) return;
+
+  // Expanded panel: search + checkbox list + apply
+  const panel = document.createElement('div');
+  panel.className = 'branch-picker-panel';
+
+  const search = document.createElement('input');
+  search.type = 'text';
+  search.placeholder = 'Search branches…';
+  search.className = 'branch-picker-search';
+  search.value = _branchPickerSearch;
+  panel.appendChild(search);
+
+  const list = document.createElement('div');
+  list.className = 'branch-picker-list';
+  list.innerHTML = '<div class="branch-picker-list-empty">Loading…</div>';
+  panel.appendChild(list);
+
+  const footer = document.createElement('div');
+  footer.className = 'branch-picker-footer';
+  const selCount = document.createElement('span');
+  selCount.className = 'branch-picker-footer-info';
+  footer.appendChild(selCount);
+  const apply = document.createElement('button');
+  apply.className = 'btn btn-compact';
+  apply.type = 'button';
+  apply.textContent = 'Apply';
+  footer.appendChild(apply);
+  panel.appendChild(footer);
+
+  host.appendChild(panel);
+
+  // Stage selection in a local Set, only commit on Apply
+  const selected = new Set(visible);
+
+  function refreshFooter() {
+    selCount.textContent = `${selected.size} selected · cap 30`;
+  }
+  refreshFooter();
+
+  (async function loadAndRender() {
+    let active;
+    try {
+      active = await _getBranchPickerCache();
+    } catch (e) {
+      list.innerHTML = '<div class="branch-picker-list-empty">Failed to load branches</div>';
+      return;
+    }
+
+    // Merge: currently-visible (may not all be in "active" if user picked old) + active sorted
+    const seen = new Set();
+    const combined = [];
+    for (const v of visible) {
+      seen.add(v);
+      combined.push({ name: v, last_commit_at: '', is_remote: v.startsWith('origin/') || v.startsWith('remotes/'), _pinned: true });
+    }
+    for (const b of active) {
+      if (seen.has(b.name)) continue;
+      combined.push(b);
+    }
+
+    function renderList() {
+      list.innerHTML = '';
+      const q = _branchPickerSearch.toLowerCase();
+      const matches = q ? combined.filter(b => b.name.toLowerCase().includes(q)) : combined;
+      if (!matches.length) {
+        list.innerHTML = '<div class="branch-picker-list-empty">No matching branches</div>';
+        return;
+      }
+      for (const b of matches.slice(0, 200)) {
+        const row = document.createElement('label');
+        row.className = 'branch-picker-row';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = selected.has(b.name);
+        cb.addEventListener('change', () => {
+          if (cb.checked) selected.add(b.name);
+          else selected.delete(b.name);
+          refreshFooter();
+        });
+        row.appendChild(cb);
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'branch-picker-row-name';
+        nameSpan.textContent = b.name;
+        nameSpan.title = b.name;
+        if (b.is_remote) {
+          const r = document.createElement('span');
+          r.className = 'branch-picker-row-tag';
+          r.textContent = 'remote';
+          nameSpan.appendChild(r);
+        }
+        row.appendChild(nameSpan);
+        if (b.last_commit_at) {
+          const meta = document.createElement('span');
+          meta.className = 'branch-picker-row-meta';
+          meta.textContent = b.last_commit_at.slice(0, 10);
+          row.appendChild(meta);
+        }
+        list.appendChild(row);
+      }
+    }
+    renderList();
+    search.addEventListener('input', () => {
+      _branchPickerSearch = search.value;
+      renderList();
+    });
+  })();
+
+  apply.addEventListener('click', () => {
+    const picked = Array.from(selected).slice(0, 30);
+    currentBranchFilter = picked.length ? picked : null;
+    _branchPickerExpanded = false;
+    fetchGraph();
+  });
 }
 
 async function fetchTaskDetail(taskId) {
@@ -76,7 +293,7 @@ async function fetchProposalDetail(proposalId) {
 
 const COMMIT_Y_STEP = 28;
 const COMMIT_X_BASE = 50;    // leftmost lane X
-const LANE_WIDTH = 24;       // horizontal distance between branch lanes
+const LANE_WIDTH = 44;       // horizontal distance between branch lanes (wider = easier to distinguish)
 const IDEA_OFFSET_X = 120;   // horizontal distance from rightmost lane to idea node
 const FEAT_ROW_H = 52;       // vertical spacing between feature rows
 const PAD_TOP = 40;
@@ -87,6 +304,22 @@ const FEAT_R = 7;
 const TRUNK_X_OFFSET = 50;   // trunk line offset from idea right edge
 
 // ── Build Layout ────────────────────────────────────────────────
+
+// Short display name for chips: strip origin/ prefix; if still long,
+// collapse path segments to last-component (`feat/foo/bar` → `…/bar`).
+// The full name is preserved in `title` attribute for hover.
+function shortenBranchName(name) {
+  let s = name;
+  if (s.startsWith('remotes/origin/')) s = s.slice(15);
+  else if (s.startsWith('origin/')) s = s.slice(7);
+  else if (s.startsWith('remotes/')) s = s.slice(8);
+  if (s.length > 22 && s.includes('/')) {
+    const parts = s.split('/');
+    s = '…/' + parts[parts.length - 1];
+  }
+  if (s.length > 22) s = s.slice(0, 21) + '…';
+  return s;
+}
 
 // Canonicalize a branch ref name: strip remotes/origin/ or origin/ prefix
 // so 'origin/prod' and local 'prod' end up on the same lane.
@@ -265,8 +498,30 @@ function buildLayout() {
     maxY = Math.max(maxY, fy + 30);
   });
 
+  // Map each branch name → tip commit hash (the most recent commit, in
+  // topo order, that carries that ref). Used by the render loop to draw
+  // a branch label only at its tip — every other commit on the branch
+  // still gets the colored dot, but no text. Critical for readability
+  // when many merge/tip commits share refs.
+  // Note: `commits` is newest-first (topo order from `git log`), so the
+  // first hit wins.
+  const branchTips = {};
+  for (const c of commits) {
+    for (const br of (c.branches || [])) {
+      if (!(br in branchTips)) branchTips[br] = c.hash;
+    }
+    for (const br of (c.remote_branches || [])) {
+      const canon = canonicalBranch(br);
+      // For remote labels we key by the raw remote name (e.g. 'origin/foo')
+      // so the render loop can compare against the un-canonicalized ref.
+      if (!(br in branchTips)) branchTips[br] = c.hash;
+      // Also stash the canonical name in case any consumer needs it.
+      if (!(canon in branchTips)) branchTips[canon] = c.hash;
+    }
+  }
+
   return { positions, commitPositions, branchColorMap, branchLaneMap,
-           numLanes, featX, ideaX,
+           numLanes, featX, ideaX, branchTips,
            width: maxX + 80, height: maxY + PAD_BOTTOM };
 }
 
@@ -396,14 +651,18 @@ function renderGraph() {
     // Inner filled circle (merge commits slightly larger)
     g.appendChild(svgEl('circle', { r: nodeR, fill: c.color }));
 
-    // Branch labels: local branches first, then remote branches (dashed border)
-    const allRefs = [
+    // Branch labels: drawn only at each branch's TIP commit, not at every
+    // commit that happens to carry the ref. (In a busy graph a single
+    // commit can be the tip of many branches; lower commits on those
+    // branches still get the dot/color but the text labels would just
+    // be visual noise.)
+    const tipRefs = [
       ...c.branches.map(n => ({ name: n, remote: false })),
       ...((c.remote_branches || []).map(n => ({ name: n, remote: true }))),
-    ];
-    for (let i = 0; i < allRefs.length; i++) {
+    ].filter(r => layout.branchTips[r.name] === c.hash);
+    for (let i = 0; i < tipRefs.length; i++) {
       const pillG = svgEl('g', { transform: `translate(${nodeR + 10}, ${-8 + i * 18})` });
-      const { name: brName, remote } = allRefs[i];
+      const { name: brName, remote } = tipRefs[i];
       // Strip origin/ prefix for color lookup; remote refs use gray-ish tone
       const colorKey = brName.replace(/^(origin|remotes\/[^/]+)\//, '');
       const brColor = remote ? '#8b949e' : (layout.branchColorMap[colorKey] || '#8b949e');
@@ -907,6 +1166,43 @@ async function renderProposalReview(proposalId) {
   return html;
 }
 
+async function _submitProposalReview(proposalId, body, btnSelector, log) {
+  // Disable both Approve and Abandon buttons in the current detail panel
+  // so a double-click can't fire two requests (second would 400 since the
+  // proposal is no longer pending).
+  const buttons = Array.from(document.querySelectorAll('.detail-section button'))
+    .filter(b => /onclick="(approve|abandon)/i.test(b.outerHTML)
+                 || b.textContent.includes('Approve')
+                 || b.textContent.includes('Abandon'));
+  const originalLabels = buttons.map(b => b.textContent);
+  buttons.forEach(b => { b.disabled = true; });
+  try {
+    const res = await fetch(`/api/proposals/${proposalId}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+      alert(err.detail || `Failed: HTTP ${res.status}`);
+      console.error('[proposal review] failed', res.status, err);
+      return false;
+    }
+    addLogEntry(log.event, log.message);
+    await fetchGraph();
+    return true;
+  } catch (e) {
+    console.error('[proposal review] threw', e);
+    alert('Error: ' + e.message);
+    return false;
+  } finally {
+    buttons.forEach((b, i) => {
+      b.disabled = false;
+      b.textContent = originalLabels[i];
+    });
+  }
+}
+
 async function approveProposal(proposalId) {
   const checkboxes = document.querySelectorAll('.prop-feat-cb');
   const featureIds = [];
@@ -915,30 +1211,24 @@ async function approveProposal(proposalId) {
   const createIssuesCb = document.getElementById(`approve-create-issues-${proposalId}`);
   const createIssues = createIssuesCb ? createIssuesCb.checked : autoCreateIssues;
 
-  await fetch(`/api/proposals/${proposalId}/review`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      action: 'approve',
-      feature_ids: featureIds,
-      create_issues: createIssues,
-    }),
-  });
-  addLogEntry(
-    'proposal_approved',
-    `Approved ${featureIds.length} features from ${proposalId}${createIssues ? ' (+GitHub feat issues)' : ''}`
+  await _submitProposalReview(
+    proposalId,
+    { action: 'approve', feature_ids: featureIds, create_issues: createIssues },
+    'approve',
+    {
+      event: 'proposal_approved',
+      message: `Approved ${featureIds.length} features from ${proposalId}${createIssues ? ' (+GitHub feat issues)' : ''}`,
+    },
   );
-  await fetchGraph();
 }
 
 async function abandonIdea(proposalId) {
-  await fetch(`/api/proposals/${proposalId}/review`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'reject' }),
-  });
-  addLogEntry('idea_abandoned', `Abandoned proposal ${proposalId}`);
-  await fetchGraph();
+  await _submitProposalReview(
+    proposalId,
+    { action: 'reject' },
+    'abandon',
+    { event: 'idea_abandoned', message: `Abandoned proposal ${proposalId}` },
+  );
 }
 
 function requestResplit(proposalId) {
@@ -1230,6 +1520,7 @@ async function fetchOrchestraConfig() {
 
 async function doSwitchProject() {
   if (!confirm('Disconnect from current project and switch?')) return;
+  stopDashboard();  // stop polling + SSE before disconnect so we don't 503-spam
   await fetch('/api/disconnect', { method: 'POST' });
   document.getElementById('dashboard').classList.add('hidden');
   document.getElementById('setup-screen').classList.remove('hidden');
@@ -1470,8 +1761,13 @@ function closeChatDrawer() {
 
 // ── SSE Event stream ────────────────────────────────────────────
 
+let _sseSource = null;
+let _sseShouldReconnect = true;
+
 function connectSSE() {
+  _sseShouldReconnect = true;
   const evtSource = new EventSource('/api/events/stream');
+  _sseSource = evtSource;
 
   evtSource.addEventListener('orchestra', async (e) => {
     const { event, data } = JSON.parse(e.data);
@@ -1507,7 +1803,7 @@ function connectSSE() {
   });
 
   evtSource.onerror = () => {
-    setTimeout(connectSSE, 3000);
+    if (_sseShouldReconnect) setTimeout(connectSSE, 3000);
   };
 }
 
@@ -1610,11 +1906,13 @@ async function setupInit() {
   if (!path) return;
 
   const btn = document.getElementById('btn-setup-init');
+  const originalLabel = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Initializing...';
 
   try {
     const trackedBranch = document.getElementById('setup-tracked-branch').value.trim() || null;
+    console.log('[setupInit] POST /api/init', { path, trackedBranch });
     const res = await fetch('/api/init', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1622,25 +1920,29 @@ async function setupInit() {
     });
 
     if (!res.ok) {
-      const err = await res.json();
+      const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+      console.error('[setupInit] /api/init failed', err);
       alert(err.detail || 'Initialization failed');
-      btn.disabled = false;
-      btn.textContent = 'Initialize Orchestra';
       return;
     }
 
     const data = await res.json();
+    console.log('[setupInit] /api/init ok', data);
     // If a RunConfig already exists (re-initialized project), skip Step 3.
     const rcResp = await fetch('/api/run_config');
+    console.log('[setupInit] /api/run_config →', rcResp.status);
     if (rcResp.ok) {
       showDashboard(data.project_path);
     } else {
       setupShowStep3();
     }
   } catch (e) {
+    console.error('[setupInit] threw', e);
     alert('Error: ' + e.message);
+  } finally {
+    // Always re-enable so a transient error doesn't leave the button stuck.
     btn.disabled = false;
-    btn.textContent = 'Initialize Orchestra';
+    btn.textContent = originalLabel;
   }
 }
 
@@ -1695,7 +1997,13 @@ async function runConfigSave() {
   if (r.ok) {
     document.getElementById('setup-step3').classList.add('hidden');
     document.getElementById('setup-screen').classList.add('hidden');
-    location.reload();
+    // Hand off to dashboard without a full page reload (which felt like a hang).
+    try {
+      const s = await fetch('/api/status').then(r => r.json());
+      showDashboard(s.project_path);
+    } catch (e) {
+      location.reload();  // fallback if status fetch fails
+    }
   } else {
     const result = document.getElementById('rc-test-result');
     let msg = 'Save failed';
@@ -1723,7 +2031,10 @@ function showDashboard(projectPath) {
   startDashboard();
 }
 
+let _pollIntervals = [];
+
 function startDashboard() {
+  stopDashboard();  // idempotent re-init (defensive against double-call)
   initTooltip();
   refreshAutoPauses();
   fetchGraph();
@@ -1731,17 +2042,27 @@ function startDashboard() {
   fetchTrackingStatus();
   fetchDrafts();
   fetchTrackedBranch();
-  setInterval(fetchAgents, 5000);
-  setInterval(fetchGraph, 10000);
-  setInterval(fetchDrafts, 10000);
-  setInterval(refreshAutoPauses, 30000);
-  setInterval(() => {
+  _pollIntervals.push(setInterval(fetchAgents, 5000));
+  _pollIntervals.push(setInterval(fetchGraph, 10000));
+  _pollIntervals.push(setInterval(fetchDrafts, 10000));
+  _pollIntervals.push(setInterval(refreshAutoPauses, 30000));
+  _pollIntervals.push(setInterval(() => {
     const active = document.querySelector('.side-tab.active[data-side-tab]');
     if (!active) return;
     if (active.dataset.sideTab === 'issues') fetchIssues();
     else if (active.dataset.sideTab === 'prs') fetchPRs();
-  }, 30000);
+  }, 30000));
   connectSSE();
+}
+
+function stopDashboard() {
+  for (const id of _pollIntervals) clearInterval(id);
+  _pollIntervals = [];
+  if (_sseSource) {
+    _sseShouldReconnect = false;
+    try { _sseSource.close(); } catch (e) {}
+    _sseSource = null;
+  }
 }
 
 // ── Tracked Branch / Git ──────────────────────────────────────
@@ -2942,6 +3263,7 @@ const SIDE_TAB_HANDLERS = {
   discussions: () => fetchDiscussions(),
   issues: () => { if (!issuesCache.length) fetchIssues(); },
   prs: () => { if (!prsCache.length) fetchPRs(); },
+  config: () => { fetchClaudeConfig(); fetchVaultKeys(); },
 };
 
 function activateSideTab(tabName) {
@@ -3001,6 +3323,40 @@ document.getElementById('menu-switch').addEventListener('click', () => {
   overflowMenu.classList.add('hidden');
   doSwitchProject();
 });
+{
+  const _rcBtn = document.getElementById('menu-run-config');
+  if (_rcBtn) _rcBtn.addEventListener('click', () => {
+    overflowMenu.classList.add('hidden');
+    openRunConfigEditor();
+  });
+}
+
+async function openRunConfigEditor() {
+  // Reuse the setup-step3 form as the editor — populate it with the
+  // current RunConfig and surface the existing setup-screen overlay.
+  try {
+    const r = await fetch('/api/run_config');
+    if (r.ok) {
+      const cfg = await r.json();
+      document.getElementById('rc-command').value = cfg.command || '';
+      document.getElementById('rc-ready-signal').value = cfg.ready_signal || '';
+      document.getElementById('rc-base-url').value = cfg.base_url || 'http://localhost:3000';
+      document.getElementById('rc-timeout').value = cfg.startup_timeout || 60;
+      const info = document.getElementById('rc-detect-info');
+      if (info && cfg.discovered_by) {
+        info.classList.remove('hidden');
+        document.getElementById('rc-detect-source').textContent = cfg.discovered_by;
+      }
+    }
+  } catch (e) { /* leave whatever was there */ }
+  // Save button starts enabled in edit mode (Test is still optional).
+  const saveBtn = document.getElementById('rc-save-btn');
+  if (saveBtn) saveBtn.disabled = false;
+  // Show overlay
+  document.getElementById('setup-step2').classList.add('hidden');
+  document.getElementById('setup-step3').classList.remove('hidden');
+  document.getElementById('setup-screen').classList.remove('hidden');
+}
 
 // ── Close button (detail panel header) ──────────────────────
 {
@@ -3034,3 +3390,398 @@ document.getElementById('menu-switch').addEventListener('click', () => {
     document.getElementById('setup-screen').classList.remove('hidden');
   }
 })();
+
+// ── Claude Config Tab ─────────────────────────────────────────
+
+let _configData = null;
+
+async function fetchClaudeConfig() {
+  const res = await fetch('/api/claude-config');
+  if (!res.ok) return;
+  _configData = await res.json();
+  renderConfigPanel();
+}
+
+function renderConfigPanel() {
+  const el = document.getElementById('config-panel');
+  if (!el || !_configData) return;
+
+  const { active_profile, profiles } = _configData;
+  const profileNames = Object.keys(profiles);
+
+  let html = '<div class="config-profiles">';
+
+  // Profile cards
+  html += '<div class="config-profile-cards">';
+  for (const name of profileNames) {
+    const p = profiles[name];
+    const isActive = name === active_profile;
+    html += `
+      <div class="config-card ${isActive ? 'config-card-active' : ''}"
+           onclick="selectConfigProfile('${name}')">
+        <div class="config-card-name">${name}</div>
+        <div class="config-card-meta">
+          <span class="config-badge">${p.provider}</span>
+          <span class="config-badge">${p.model}</span>
+        </div>
+        ${isActive ? '<div class="config-card-active-dot">●</div>' : ''}
+      </div>`;
+  }
+  html += `
+    <div class="config-card config-card-add" onclick="showCreateProfileDialog()">
+      <span class="config-add-icon">+</span>
+      <span>New Profile</span>
+    </div>`;
+  html += '</div>';
+
+  // Active profile editor
+  const selectedName = _selectedConfigProfile || active_profile;
+  const p = profiles[selectedName];
+  if (p) {
+    html += renderProfileEditor(selectedName, p);
+  }
+
+  // Vault section
+  html += renderVaultSection();
+
+  html += '</div>';
+  el.innerHTML = html;
+  fetchVaultKeys();
+}
+
+function renderProfileEditor(name, p) {
+  const roleNames = ['head_leader', 'feature_realizer', 'feature_interpreter', 'discussion_analyst'];
+  const envRows = Object.entries(p.env || {}).map(([k, v]) =>
+    `<tr>
+      <td><input class="config-input config-input-sm" value="${k}" data-env-key="${k}" onchange="updateProfileEnvKey(this, '${name}')"></td>
+      <td><input class="config-input config-input-sm" value="${v.startsWith('vault:') ? v : v}" ${v.startsWith('vault:') ? 'readonly' : ''} data-env-val="${k}" onchange="updateProfileEnvVal(this, '${name}')">
+      </td>
+      <td><button class="btn-icon-sm" onclick="removeProfileEnv('${name}', '${k}')">&times;</button></td>
+    </tr>`
+  ).join('');
+
+  const mcpRows = Object.entries(p.mcp_servers || {}).map(([sname, srv]) =>
+    `<tr>
+      <td><code>${sname}</code></td>
+      <td><code>${srv.command || ''} ${(srv.args || []).join(' ')}</code></td>
+      <td><button class="btn-icon-sm" onclick="removeMcpServer('${name}', '${sname}')">&times;</button></td>
+    </tr>`
+  ).join('');
+
+  return `
+  <div class="config-editor">
+    <div class="config-section">
+      <div class="config-section-header" onclick="toggleConfigSection(this)">
+        <span>Provider & Model</span><span class="config-chevron">▸</span>
+      </div>
+      <div class="config-section-body">
+        <div class="config-row">
+          <label>Provider</label>
+          <select class="config-input" onchange="updateProfile('${name}', 'provider', this.value)">
+            ${['anthropic','bedrock','vertex','custom'].map(o =>
+              `<option value="${o}" ${p.provider === o ? 'selected' : ''}>${o}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div class="config-row">
+          <label>Model</label>
+          <input class="config-input" value="${p.model}" onchange="updateProfile('${name}', 'model', this.value)">
+        </div>
+        <div class="config-row" ${p.provider !== 'custom' ? 'style="display:none"' : ''}>
+          <label>API Base URL</label>
+          <input class="config-input" value="${p.api_base_url || ''}" onchange="updateProfile('${name}', 'api_base_url', this.value)">
+        </div>
+      </div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-section-header" onclick="toggleConfigSection(this)">
+        <span>Agent Settings</span><span class="config-chevron">▸</span>
+      </div>
+      <div class="config-section-body">
+        <div class="config-row">
+          <label>Max Turns</label>
+          <input class="config-input" type="number" value="${p.max_turns}" onchange="updateProfile('${name}', 'max_turns', parseInt(this.value))">
+        </div>
+        <div class="config-row">
+          <label>Permission Mode</label>
+          <select class="config-input" onchange="updateProfile('${name}', 'permission_mode', this.value)">
+            ${['bypassPermissions','default'].map(o =>
+              `<option value="${o}" ${p.permission_mode === o ? 'selected' : ''}>${o}</option>`
+            ).join('')}
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-section-header" onclick="toggleConfigSection(this)">
+        <span>Role Models</span><span class="config-chevron">▸</span>
+      </div>
+      <div class="config-section-body">
+        ${roleNames.map(r => `
+          <div class="config-row">
+            <label>${r}</label>
+            <input class="config-input" value="${(p.role_models || {})[r] || ''}"
+                   placeholder="(default: ${p.model})"
+                   onchange="updateProfileRoleModel('${name}', '${r}', this.value)">
+          </div>
+        `).join('')}
+      </div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-section-header" onclick="toggleConfigSection(this)">
+        <span>Environment Variables</span><span class="config-chevron">▸</span>
+      </div>
+      <div class="config-section-body">
+        <table class="config-table">
+          <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+          <tbody>${envRows}</tbody>
+        </table>
+        <button class="btn btn-compact" onclick="addProfileEnv('${name}')">+ Add Variable</button>
+      </div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-section-header" onclick="toggleConfigSection(this)">
+        <span>MCP Servers</span><span class="config-chevron">▸</span>
+      </div>
+      <div class="config-section-body">
+        <table class="config-table">
+          <thead><tr><th>Name</th><th>Command</th><th></th></tr></thead>
+          <tbody>${mcpRows}</tbody>
+        </table>
+        <button class="btn btn-compact" onclick="addMcpServer('${name}')">+ Add Server</button>
+      </div>
+    </div>
+
+    <div class="config-actions">
+      ${name !== _configData.active_profile
+        ? `<button class="btn btn-primary" onclick="switchProfile('${name}')">Activate this profile</button>`
+        : `<span class="config-active-label">● Active</span>`}
+      <button class="btn btn-danger" onclick="deleteProfile('${name}')">Delete</button>
+    </div>
+  </div>`;
+}
+
+function renderVaultSection() {
+  return `
+  <div class="config-section config-vault">
+    <div class="config-section-header" onclick="toggleConfigSection(this)">
+      <span>🔒 Vault (Encrypted Secrets)</span><span class="config-chevron">▸</span>
+    </div>
+    <div class="config-section-body">
+      <div id="vault-keys-list">Loading…</div>
+      <div class="config-row">
+        <input class="config-input" id="vault-new-name" placeholder="Secret name">
+        <input class="config-input" id="vault-new-value" type="password" placeholder="Secret value">
+        <button class="btn btn-compact" onclick="storeVaultSecret()">Store</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+let _selectedConfigProfile = null;
+
+function selectConfigProfile(name) {
+  _selectedConfigProfile = name;
+  renderConfigPanel();
+}
+
+function toggleConfigSection(header) {
+  const body = header.nextElementSibling;
+  const chevron = header.querySelector('.config-chevron');
+  if (body.style.display === 'none') {
+    body.style.display = '';
+    chevron.textContent = '▾';
+  } else {
+    body.style.display = 'none';
+    chevron.textContent = '▸';
+  }
+}
+
+let _updateDebounce = null;
+async function updateProfile(name, field, value) {
+  clearTimeout(_updateDebounce);
+  _updateDebounce = setTimeout(async () => {
+    const body = {};
+    body[field] = value;
+    const res = await fetch(`/api/claude-config/profiles/${name}`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (res.ok) {
+      _configData.profiles[name] = await res.json();
+    }
+  }, 500);
+}
+
+async function updateProfileRoleModel(profileName, role, value) {
+  const p = _configData.profiles[profileName];
+  const rm = {...(p.role_models || {})};
+  if (value) rm[role] = value;
+  else delete rm[role];
+  await updateProfile(profileName, 'role_models', rm);
+}
+
+async function updateProfileEnvKey(input, profileName) {
+  await _syncProfileEnv(profileName);
+}
+
+async function updateProfileEnvVal(input, profileName) {
+  await _syncProfileEnv(profileName);
+}
+
+async function _syncProfileEnv(profileName) {
+  const rows = document.querySelectorAll(`[data-env-key]`);
+  const env = {};
+  rows.forEach(row => {
+    const key = row.value;
+    const valInput = document.querySelector(`[data-env-val="${row.dataset.envKey}"]`);
+    if (key && valInput) env[key] = valInput.value;
+  });
+  await updateProfile(profileName, 'env', env);
+}
+
+async function addProfileEnv(profileName) {
+  const key = prompt('Variable name:');
+  if (!key) return;
+  const val = prompt('Value (use vault:name for secrets):');
+  if (val === null) return;
+  const p = _configData.profiles[profileName];
+  const env = {...(p.env || {}), [key]: val};
+  const res = await fetch(`/api/claude-config/profiles/${profileName}`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({env}),
+  });
+  if (res.ok) {
+    _configData.profiles[profileName] = await res.json();
+    renderConfigPanel();
+  }
+}
+
+async function removeProfileEnv(profileName, key) {
+  const p = _configData.profiles[profileName];
+  const env = {...(p.env || {})};
+  delete env[key];
+  const res = await fetch(`/api/claude-config/profiles/${profileName}`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({env}),
+  });
+  if (res.ok) {
+    _configData.profiles[profileName] = await res.json();
+    renderConfigPanel();
+  }
+}
+
+async function addMcpServer(profileName) {
+  const name = prompt('Server name:');
+  if (!name) return;
+  const command = prompt('Command (e.g. uvx):');
+  if (!command) return;
+  const argsStr = prompt('Args (comma-separated):') || '';
+  const args = argsStr.split(',').map(a => a.trim()).filter(Boolean);
+
+  const p = _configData.profiles[profileName];
+  const servers = {...(p.mcp_servers || {}), [name]: {command, args}};
+  const res = await fetch(`/api/claude-config/profiles/${profileName}`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mcp_servers: servers}),
+  });
+  if (res.ok) {
+    _configData.profiles[profileName] = await res.json();
+    renderConfigPanel();
+  }
+}
+
+async function removeMcpServer(profileName, serverName) {
+  const p = _configData.profiles[profileName];
+  const servers = {...(p.mcp_servers || {})};
+  delete servers[serverName];
+  const res = await fetch(`/api/claude-config/profiles/${profileName}`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mcp_servers: servers}),
+  });
+  if (res.ok) {
+    _configData.profiles[profileName] = await res.json();
+    renderConfigPanel();
+  }
+}
+
+async function switchProfile(name) {
+  const res = await fetch('/api/claude-config/active-profile', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  });
+  if (res.ok) {
+    _selectedConfigProfile = name;
+    await fetchClaudeConfig();
+  }
+}
+
+async function deleteProfile(name) {
+  if (!confirm(`Delete profile "${name}"?`)) return;
+  const res = await fetch(`/api/claude-config/profiles/${name}`, {method: 'DELETE'});
+  if (res.ok) {
+    _selectedConfigProfile = null;
+    await fetchClaudeConfig();
+  } else {
+    const err = await res.json();
+    alert(err.detail || 'Cannot delete');
+  }
+}
+
+async function showCreateProfileDialog() {
+  const name = prompt('Profile name:');
+  if (!name) return;
+  const res = await fetch('/api/claude-config/profiles', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  });
+  if (res.ok) {
+    _selectedConfigProfile = name;
+    await fetchClaudeConfig();
+  } else {
+    const err = await res.json();
+    alert(err.detail || 'Error');
+  }
+}
+
+async function fetchVaultKeys() {
+  const res = await fetch('/api/claude-config/vault');
+  if (!res.ok) return;
+  const keys = await res.json();
+  const el = document.getElementById('vault-keys-list');
+  if (!el) return;
+  if (keys.length === 0) {
+    el.innerHTML = '<div class="config-empty">No secrets stored</div>';
+    return;
+  }
+  el.innerHTML = keys.map(k => `
+    <div class="vault-key-row">
+      <span class="vault-key-name">${k}</span>
+      <span class="vault-key-value">••••••••</span>
+      <button class="btn-icon-sm" onclick="deleteVaultKey('${k}')">&times;</button>
+    </div>
+  `).join('');
+}
+
+async function storeVaultSecret() {
+  const nameEl = document.getElementById('vault-new-name');
+  const valueEl = document.getElementById('vault-new-value');
+  if (!nameEl.value || !valueEl.value) return;
+  await fetch('/api/claude-config/vault', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: nameEl.value, value: valueEl.value}),
+  });
+  nameEl.value = '';
+  valueEl.value = '';
+  fetchVaultKeys();
+}
+
+async function deleteVaultKey(name) {
+  if (!confirm(`Delete secret "${name}"?`)) return;
+  await fetch(`/api/claude-config/vault/${name}`, {method: 'DELETE'});
+  fetchVaultKeys();
+}

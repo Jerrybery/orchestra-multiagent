@@ -19,6 +19,8 @@ from ..core.task_queue import TaskStatus
 from ..core.issue_tracker import WatchConfig
 from ..core.run_config import RunConfig, detect_run_config
 from ..core.dev_server import DevServer, DevServerStartupError
+from ..core.claude_config import ClaudeConfigManager, ClaudeProfile
+from ..core.vault import Vault
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -56,6 +58,47 @@ def _orch() -> Orchestrator:
 
 def _is_initialized() -> bool:
     return _orchestrator is not None
+
+
+def _config_mgr() -> ClaudeConfigManager:
+    orch = _orch()
+    if not orch.config.claude_config_mgr:
+        raise HTTPException(503, "ClaudeConfigManager not initialized")
+    return orch.config.claude_config_mgr
+
+
+def _vault() -> Vault:
+    orch = _orch()
+    if not orch.config.vault:
+        raise HTTPException(503, "Vault not initialized")
+    return orch.config.vault
+
+
+def _mask_env(env: dict[str, str]) -> dict[str, str]:
+    SECRET_SUFFIXES = ("_KEY", "_SECRET", "_TOKEN", "_PASSWORD")
+    masked = {}
+    for k, v in env.items():
+        if v.startswith("vault:"):
+            masked[k] = v
+        elif any(k.upper().endswith(s) for s in SECRET_SUFFIXES):
+            masked[k] = "••••••••"
+        else:
+            masked[k] = v
+    return masked
+
+
+def _profile_summary(p: ClaudeProfile) -> dict:
+    return {
+        "name": p.name,
+        "provider": p.provider,
+        "model": p.model,
+        "max_turns": p.max_turns,
+        "permission_mode": p.permission_mode,
+        "api_base_url": p.api_base_url,
+        "env": _mask_env(p.env),
+        "mcp_servers": p.mcp_servers,
+        "role_models": p.role_models,
+    }
 
 
 # ── Models ──────────────────────────────────────────────────────
@@ -98,6 +141,38 @@ class RunConfigPayload(BaseModel):
     ready_signal: Optional[str] = None
     base_url: str = "http://localhost:3000"
     startup_timeout: int = 60
+
+
+class ProfileCreate(BaseModel):
+    name: str
+    provider: str = "anthropic"
+    model: str = "sonnet"
+    max_turns: int = 50
+    permission_mode: str = "bypassPermissions"
+    api_base_url: Optional[str] = None
+    env: dict[str, str] = {}
+    mcp_servers: dict[str, dict] = {}
+    role_models: dict[str, str] = {}
+
+
+class ProfileUpdate(BaseModel):
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    max_turns: Optional[int] = None
+    permission_mode: Optional[str] = None
+    api_base_url: Optional[str] = None
+    env: Optional[dict[str, str]] = None
+    mcp_servers: Optional[dict[str, dict]] = None
+    role_models: Optional[dict[str, str]] = None
+
+
+class ActiveProfileSwitch(BaseModel):
+    name: str
+
+
+class VaultStore(BaseModel):
+    name: str
+    value: str
 
 
 # ── Routes ──────────────────────────────────────────────────────
@@ -400,12 +475,84 @@ async def get_prs(state: str = "all"):
     ]
 
 
+@app.get("/api/branches/active")
+async def list_active_branches(limit: int = 15):
+    """Branches sorted by last-committer-date, most recent first.
+
+    Fuels the branch-picker UI. ``limit`` caps the response.
+    """
+    orch = _orch()
+    return await orch.worktree.list_active_branches(limit=limit)
+
+
+def _smart_default_branches(active: list[dict], limit: int = 15) -> list[str]:
+    """Pick a readable default set: main/master always shown if present.
+
+    Strategy:
+      1. Always include local ``main``/``master`` (or ``origin/main``,
+         ``origin/master``) when they exist, at the front of the list.
+      2. Fill the rest from the most recently committed branches.
+      3. Cap total at ``limit``.
+
+    If the repo somehow has zero refs (fresh repo), return an empty list
+    — the caller will fall back to the legacy ``--all --remotes`` path.
+    """
+    names = [b["name"] for b in active]
+    canonical_priority: list[str] = []
+    for canon in ("main", "master"):
+        for cand in (canon, f"origin/{canon}"):
+            if cand in names:
+                canonical_priority.append(cand)
+                break
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for n in canonical_priority:
+        if n not in seen:
+            result.append(n)
+            seen.add(n)
+    for n in names:
+        if len(result) >= limit:
+            break
+        if n not in seen:
+            result.append(n)
+            seen.add(n)
+    return result[:limit]
+
+
 @app.get("/api/graph")
-async def get_graph():
-    """Return the full DAG: requirements → tasks with deps and status."""
+async def get_graph(branches: Optional[str] = None,
+                    show_abandoned: bool = False):
+    """Return the full DAG: requirements → tasks with deps and status.
+
+    Optional ``branches`` query param: comma-separated branch names to
+    visualize. When omitted, falls back to a smart default (main/master +
+    most recently active branches, capped at 15).
+    """
     orch = _orch()
     tasks = await orch.task_queue.get_tasks()
     reqs = await orch.task_queue.get_all_requirements()
+
+    # Filter abandoned items (unless explicitly requested).
+    # - "Active" proposal: status in {pending, approved, paused}.
+    #   Anything else (rejected primarily) means the user/system gave up.
+    # - A requirement is hidden when it has no active proposal AND no
+    #   surviving (non-FAILED) task — there's literally nothing to do
+    #   under it.
+    # - Tasks in terminal FAILED state are also dropped from the node
+    #   list so the graph doesn't accumulate dead branches.
+    if not show_abandoned:
+        all_props = await orch.task_queue.get_proposals(status=None)
+        active_req_ids = {
+            p.requirement_id for p in all_props
+            if p.status in ("pending", "approved", "paused")
+        }
+        active_req_ids |= {
+            t.requirement_id for t in tasks
+            if t.requirement_id and t.status != TaskStatus.FAILED
+        }
+        reqs = [r for r in reqs if r.id in active_req_ids]
+        tasks = [t for t in tasks if t.status != TaskStatus.FAILED]
 
     # Build nodes
     nodes = []
@@ -461,11 +608,24 @@ async def get_graph():
     # Also surface paused proposals so the UI can show the "已暂停" badge.
     paused_proposals = await orch.task_queue.get_proposals(status="paused")
 
-    # Include repo branches (non-feat/ branches)
-    branches = await orch.worktree.list_branches()
+    # Include repo branches (non-feat/ branches) for the side panel list
+    branches_meta = await orch.worktree.list_branches()
 
-    # Git commit log for the graph
-    commits = await orch.worktree.get_log_graph(max_count=200)
+    # Resolve the visible branch set: either user-supplied via ?branches=,
+    # or a smart default (main/master + most recently active, capped at 15).
+    if branches:
+        branch_list = [b.strip() for b in branches.split(",") if b.strip()]
+    else:
+        active = await orch.worktree.list_active_branches(limit=15)
+        branch_list = _smart_default_branches(active, limit=15)
+
+    # Git commit log for the graph, filtered to the resolved branches.
+    # If branch_list is empty (no refs at all), fall back to --all so a
+    # fresh repo still renders.
+    commits = await orch.worktree.get_log_graph(
+        max_count=200,
+        branches=branch_list if branch_list else None,
+    )
 
     proposals_payload = [
         {"id": p.id, "requirement_id": p.requirement_id, "summary": p.summary,
@@ -473,8 +633,9 @@ async def get_graph():
         for p in (pending_proposals + paused_proposals)
     ]
 
-    return {"nodes": nodes, "edges": edges, "branches": branches, "commits": commits,
-            "proposals": proposals_payload}
+    return {"nodes": nodes, "edges": edges, "branches": branches_meta,
+            "commits": commits, "proposals": proposals_payload,
+            "visible_branches": branch_list}
 
 
 class IssueIdeaRequest(BaseModel):
@@ -1095,6 +1256,123 @@ async def rewrite_draft(draft_id: int, msg: ChatMessage):
     if not new_body:
         raise HTTPException(500, "Agent produced no output")
     return {"body": new_body}
+
+
+# ── User Identity ──────────────────────────────────────────────
+
+@app.post("/api/users/register")
+async def register_user(body: dict):
+    user_id = body.get("user_id")
+    display_name = body.get("display_name")
+    if not user_id:
+        raise HTTPException(400, "user_id is required")
+    orch = _orch()
+    user = await orch.task_queue.register_user(user_id, display_name)
+    return {"id": user.id, "display_name": user.display_name}
+
+@app.get("/api/users")
+async def list_users():
+    orch = _orch()
+    users = await orch.task_queue.list_users()
+    return [{"id": u.id, "display_name": u.display_name,
+             "last_seen_at": u.last_seen_at} for u in users]
+
+
+# ── Claude Config API ──────────────────────────────────────────
+
+@app.get("/api/claude-config")
+async def get_claude_config():
+    mgr = _config_mgr()
+    return {
+        "command": mgr.config.command,
+        "active_profile": mgr.config.active_profile,
+        "profiles": {
+            name: _profile_summary(p)
+            for name, p in mgr.config.profiles.items()
+        },
+    }
+
+
+@app.get("/api/claude-config/profiles")
+async def list_profiles():
+    mgr = _config_mgr()
+    return [
+        {"name": p.name, "provider": p.provider, "model": p.model}
+        for p in mgr.config.profiles.values()
+    ]
+
+
+@app.post("/api/claude-config/profiles")
+async def create_profile(req: ProfileCreate):
+    mgr = _config_mgr()
+    profile = ClaudeProfile(
+        name=req.name, provider=req.provider, model=req.model,
+        max_turns=req.max_turns, permission_mode=req.permission_mode,
+        api_base_url=req.api_base_url, env=req.env,
+        mcp_servers=req.mcp_servers, role_models=req.role_models,
+    )
+    try:
+        mgr.create_profile(req.name, profile)
+    except ValueError:
+        raise HTTPException(409, f"Profile '{req.name}' already exists")
+    return _profile_summary(profile)
+
+
+@app.get("/api/claude-config/profiles/{name}")
+async def get_profile(name: str):
+    mgr = _config_mgr()
+    if name not in mgr.config.profiles:
+        raise HTTPException(404, f"Profile '{name}' not found")
+    return _profile_summary(mgr.config.profiles[name])
+
+
+@app.put("/api/claude-config/profiles/{name}")
+async def update_profile(name: str, req: ProfileUpdate):
+    mgr = _config_mgr()
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    try:
+        mgr.update_profile(name, updates)
+    except KeyError:
+        raise HTTPException(404, f"Profile '{name}' not found")
+    return _profile_summary(mgr.config.profiles[name])
+
+
+@app.delete("/api/claude-config/profiles/{name}", status_code=204)
+async def delete_profile(name: str):
+    mgr = _config_mgr()
+    try:
+        mgr.delete_profile(name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/claude-config/active-profile")
+async def switch_active_profile(req: ActiveProfileSwitch):
+    mgr = _config_mgr()
+    try:
+        mgr.switch_profile(req.name)
+    except KeyError:
+        raise HTTPException(404, f"Profile '{req.name}' not found")
+    return {"name": mgr.config.active_profile}
+
+
+@app.get("/api/claude-config/vault")
+async def list_vault_keys():
+    v = _vault()
+    return v.list_keys()
+
+
+@app.post("/api/claude-config/vault")
+async def store_vault_secret(req: VaultStore):
+    v = _vault()
+    v.store(req.name, req.value)
+    return {"name": req.name}
+
+
+@app.delete("/api/claude-config/vault/{name}", status_code=204)
+async def delete_vault_secret(name: str):
+    v = _vault()
+    v.delete(name)
 
 
 @app.get("/api/events/stream")

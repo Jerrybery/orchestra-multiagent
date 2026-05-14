@@ -16,6 +16,8 @@ from .worktree_manager import WorktreeManager
 from .github_manager import GitHubManager
 from .agent_spawner import AgentSpawner, AgentRole, AgentHandle, AgentResult
 from .issue_tracker import IssueTracker, WatchConfig, DiscussionTree
+from .claude_config import ClaudeConfigManager
+from .vault import Vault
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +130,9 @@ class OrchestraConfig:
     tracked_branch: Optional[str] = None  # auto-checkout to latest on startup
     auto_create_issues: bool = False  # default: do NOT auto-touch GitHub on
     # submit_requirement / approve_proposal. UI/API can override per-call.
+    claude_config_mgr: Optional[ClaudeConfigManager] = None
+    vault: Optional[Vault] = None
+    database_config: Optional[dict | str] = None
 
 
 class Orchestrator:
@@ -135,7 +140,12 @@ class Orchestrator:
 
     def __init__(self, config: OrchestraConfig):
         self.config = config
-        self.task_queue = TaskQueue(config.orchestra_dir / "tasks.db")
+        from .db.engine import create_db_engine
+        self._engine, self._session_factory = create_db_engine(
+            database_config=config.database_config,
+            orchestra_dir=config.orchestra_dir,
+        )
+        self.task_queue = TaskQueue(self._session_factory)
         self.context = ContextManager(config.orchestra_dir)
         self.worktree = WorktreeManager(config.project_dir, config.orchestra_dir / "worktrees")
         self.github = GitHubManager(config.project_dir)
@@ -144,6 +154,8 @@ class Orchestrator:
             max_turns=config.max_turns,
             model=config.model,
             on_output=self._on_agent_output,
+            claude_config_mgr=config.claude_config_mgr,
+            vault=config.vault,
         )
         self._on_event: Optional[Callable[[str, dict], Awaitable[None]]] = None
         self.tracker: Optional[IssueTracker] = None
@@ -205,6 +217,8 @@ class Orchestrator:
         self.context.init()
         await self.worktree.ensure_repo()
         await self.worktree.ensure_orchestra_gitignored()
+        from .db.engine import init_db
+        await init_db(self._engine)
         await self.task_queue.init()
 
         self.context.attach_db(self.task_queue)
@@ -261,6 +275,7 @@ class Orchestrator:
 
     async def close(self) -> None:
         await self.task_queue.close()
+        await self._engine.dispose()
 
     def on_event(self, callback: Callable[[str, dict], Awaitable[None]]) -> None:
         """Register an event callback for TUI or logging."""
@@ -763,14 +778,7 @@ class Orchestrator:
 
     async def _proposal_id_for_task(self, task_id: str) -> Optional[str]:
         """Return the proposal id whose features contain `task_id`, or None."""
-        async with self.task_queue._db.execute(
-            "SELECT id, features FROM proposals"
-        ) as cur:
-            async for row in cur:
-                features = json.loads(row["features"])
-                if any(f.get("id") == task_id for f in features):
-                    return row["id"]
-        return None
+        return await self.task_queue.get_proposal_for_task(task_id)
 
     async def retry_failed_task(self, task_id: str) -> None:
         """Retry a FAILED task: move it back to ASSIGNED, clear fail_reason,
