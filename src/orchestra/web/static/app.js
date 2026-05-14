@@ -3271,6 +3271,40 @@ document.getElementById('menu-switch').addEventListener('click', () => {
   overflowMenu.classList.add('hidden');
   doSwitchProject();
 });
+{
+  const _rcBtn = document.getElementById('menu-run-config');
+  if (_rcBtn) _rcBtn.addEventListener('click', () => {
+    overflowMenu.classList.add('hidden');
+    openRunConfigEditor();
+  });
+}
+
+async function openRunConfigEditor() {
+  // Reuse the setup-step3 form as the editor — populate it with the
+  // current RunConfig and surface the existing setup-screen overlay.
+  try {
+    const r = await fetch('/api/run_config');
+    if (r.ok) {
+      const cfg = await r.json();
+      document.getElementById('rc-command').value = cfg.command || '';
+      document.getElementById('rc-ready-signal').value = cfg.ready_signal || '';
+      document.getElementById('rc-base-url').value = cfg.base_url || 'http://localhost:3000';
+      document.getElementById('rc-timeout').value = cfg.startup_timeout || 60;
+      const info = document.getElementById('rc-detect-info');
+      if (info && cfg.discovered_by) {
+        info.classList.remove('hidden');
+        document.getElementById('rc-detect-source').textContent = cfg.discovered_by;
+      }
+    }
+  } catch (e) { /* leave whatever was there */ }
+  // Save button starts enabled in edit mode (Test is still optional).
+  const saveBtn = document.getElementById('rc-save-btn');
+  if (saveBtn) saveBtn.disabled = false;
+  // Show overlay
+  document.getElementById('setup-step2').classList.add('hidden');
+  document.getElementById('setup-step3').classList.remove('hidden');
+  document.getElementById('setup-screen').classList.remove('hidden');
+}
 
 // ── Close button (detail panel header) ──────────────────────
 {
