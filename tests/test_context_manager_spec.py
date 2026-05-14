@@ -1,6 +1,7 @@
 import pytest
 from orchestra.core.context_manager import ContextManager
 from orchestra.core.task_queue import TaskQueue
+from orchestra.core.db.engine import create_db_engine, init_db
 
 
 @pytest.mark.asyncio
@@ -8,7 +9,9 @@ async def test_spec_db_io(tmp_path):
     od = tmp_path / ".orchestra"
     cm = ContextManager(od)
     cm.init()
-    q = TaskQueue(od / "tasks.db")
+    engine, sf = create_db_engine(orchestra_dir=od)
+    await init_db(engine)
+    q = TaskQueue(sf)
     await q.init()
     # add a fake task
     await q.add_task("feat-001", "demo", priority=0)
@@ -19,6 +22,7 @@ async def test_spec_db_io(tmp_path):
     assert spec == "# spec content"
     # disk file should NOT be written (DB is source of truth)
     assert not cm.get_spec_path("feat-001").exists()
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -28,7 +32,9 @@ async def test_spec_one_shot_migration(tmp_path):
     cm.init()
     # simulate legacy disk file
     cm.get_spec_path("feat-001").write_text("legacy spec")
-    q = TaskQueue(od / "tasks.db")
+    engine, sf = create_db_engine(orchestra_dir=od)
+    await init_db(engine)
+    q = TaskQueue(sf)
     await q.init()
     await q.add_task("feat-001", "demo", priority=0)
     cm.attach_db(q)
@@ -36,3 +42,4 @@ async def test_spec_one_shot_migration(tmp_path):
     await cm.migrate_specs_from_disk()
     spec = await cm.read_spec_async("feat-001")
     assert spec == "legacy spec"
+    await engine.dispose()

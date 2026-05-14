@@ -45,11 +45,15 @@ def orchestra_dir(tmp_dir):
 
 @pytest_asyncio.fixture
 async def task_queue(orchestra_dir):
-    """An initialized TaskQueue."""
-    tq = TaskQueue(orchestra_dir / "tasks.db")
+    """An initialized TaskQueue backed by ORM."""
+    from orchestra.core.db.engine import create_db_engine, init_db
+    engine, sf = create_db_engine(orchestra_dir=orchestra_dir)
+    await init_db(engine)
+    tq = TaskQueue(sf)
     await tq.init()
     yield tq
     await tq.close()
+    await engine.dispose()
 
 
 @pytest.fixture

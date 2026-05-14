@@ -8,12 +8,20 @@ exercise TaskQueue's public surface, we materialize tasks directly via
 import pytest
 from pathlib import Path
 from orchestra.core.task_queue import TaskQueue, TaskStatus
+from orchestra.core.db.engine import create_db_engine, init_db
+
+
+async def _make_tq(tmp_path: Path):
+    engine, sf = create_db_engine(orchestra_dir=tmp_path)
+    await init_db(engine)
+    q = TaskQueue(sf)
+    await q.init()
+    return q, engine
 
 
 @pytest.mark.asyncio
 async def test_get_tasks_for_proposal_returns_all_features(tmp_path: Path):
-    q = TaskQueue(tmp_path / "t.db")
-    await q.init()
+    q, engine = await _make_tq(tmp_path)
     await q.add_requirement("r1", "test")
     await q.add_proposal(
         "p1", "r1",
@@ -27,32 +35,32 @@ async def test_get_tasks_for_proposal_returns_all_features(tmp_path: Path):
     ids = sorted(t.id for t in tasks)
     assert ids == ["t1", "t2"]
     await q.close()
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_get_tasks_for_proposal_missing_proposal_returns_empty(tmp_path: Path):
-    q = TaskQueue(tmp_path / "t.db")
-    await q.init()
+    q, engine = await _make_tq(tmp_path)
     tasks = await q.get_tasks_for_proposal("does-not-exist")
     assert tasks == []
     await q.close()
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_get_tasks_for_proposal_empty_features_returns_empty(tmp_path: Path):
-    q = TaskQueue(tmp_path / "t.db")
-    await q.init()
+    q, engine = await _make_tq(tmp_path)
     await q.add_requirement("r1", "test")
     await q.add_proposal("p1", "r1", features=[])
     tasks = await q.get_tasks_for_proposal("p1")
     assert tasks == []
     await q.close()
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_transition_persists_fail_reason(tmp_path: Path):
-    q = TaskQueue(tmp_path / "t.db")
-    await q.init()
+    q, engine = await _make_tq(tmp_path)
     await q.add_requirement("r1", "test")
     await q.add_proposal("p1", "r1", features=[{"id": "t1", "title": "x"}])
     await q.add_task("t1", "x", requirement_id="r1")
@@ -64,3 +72,4 @@ async def test_transition_persists_fail_reason(tmp_path: Path):
     assert t.status == TaskStatus.FAILED
     assert t.fail_reason == "boom"
     await q.close()
+    await engine.dispose()
