@@ -657,3 +657,38 @@ class TaskQueue:
                 if any(f.get("id") == task_id for f in (p.features or [])):
                     return p.id
         return None
+
+    # ── User Identity ──────────────────────────────────────────
+
+    async def register_user(self, user_id: str, display_name: str | None = None):
+        """Register or touch a user. Idempotent: existing users get last_seen_at updated."""
+        from .db.models import User as UserModel
+        now = time.time()
+        async with self._session_factory() as session:
+            existing = await session.get(UserModel, user_id)
+            if existing:
+                existing.last_seen_at = now
+                await session.commit()
+                await session.refresh(existing)
+                return existing
+            user = UserModel(
+                id=user_id, display_name=display_name,
+                created_at=now, last_seen_at=now,
+            )
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+            return user
+
+    async def get_user(self, user_id: str):
+        from .db.models import User as UserModel
+        async with self._session_factory() as session:
+            return await session.get(UserModel, user_id)
+
+    async def list_users(self) -> list:
+        from .db.models import User as UserModel
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(UserModel).order_by(UserModel.created_at.asc())
+            )
+            return list(result.scalars().all())
