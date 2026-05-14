@@ -69,6 +69,7 @@ async function fetchGraph() {
     url += '?branches=' + encodeURIComponent(currentBranchFilter.join(','));
   }
   const res = await fetch(url);
+  if (!res.ok) return;  // 503 during disconnect — skip render
   graphData = await res.json();
   renderGraph();
   renderBranchPicker();
@@ -76,6 +77,7 @@ async function fetchGraph() {
 
 async function fetchAgents() {
   const res = await fetch('/api/agents');
+  if (!res.ok) return;
   const agents = await res.json();
   renderAgents(agents);
 }
@@ -1467,6 +1469,7 @@ async function fetchOrchestraConfig() {
 
 async function doSwitchProject() {
   if (!confirm('Disconnect from current project and switch?')) return;
+  stopDashboard();  // stop polling + SSE before disconnect so we don't 503-spam
   await fetch('/api/disconnect', { method: 'POST' });
   document.getElementById('dashboard').classList.add('hidden');
   document.getElementById('setup-screen').classList.remove('hidden');
@@ -1707,8 +1710,13 @@ function closeChatDrawer() {
 
 // ── SSE Event stream ────────────────────────────────────────────
 
+let _sseSource = null;
+let _sseShouldReconnect = true;
+
 function connectSSE() {
+  _sseShouldReconnect = true;
   const evtSource = new EventSource('/api/events/stream');
+  _sseSource = evtSource;
 
   evtSource.addEventListener('orchestra', async (e) => {
     const { event, data } = JSON.parse(e.data);
@@ -1744,7 +1752,7 @@ function connectSSE() {
   });
 
   evtSource.onerror = () => {
-    setTimeout(connectSSE, 3000);
+    if (_sseShouldReconnect) setTimeout(connectSSE, 3000);
   };
 }
 
@@ -1972,7 +1980,10 @@ function showDashboard(projectPath) {
   startDashboard();
 }
 
+let _pollIntervals = [];
+
 function startDashboard() {
+  stopDashboard();  // idempotent re-init (defensive against double-call)
   initTooltip();
   refreshAutoPauses();
   fetchGraph();
@@ -1980,17 +1991,27 @@ function startDashboard() {
   fetchTrackingStatus();
   fetchDrafts();
   fetchTrackedBranch();
-  setInterval(fetchAgents, 5000);
-  setInterval(fetchGraph, 10000);
-  setInterval(fetchDrafts, 10000);
-  setInterval(refreshAutoPauses, 30000);
-  setInterval(() => {
+  _pollIntervals.push(setInterval(fetchAgents, 5000));
+  _pollIntervals.push(setInterval(fetchGraph, 10000));
+  _pollIntervals.push(setInterval(fetchDrafts, 10000));
+  _pollIntervals.push(setInterval(refreshAutoPauses, 30000));
+  _pollIntervals.push(setInterval(() => {
     const active = document.querySelector('.side-tab.active[data-side-tab]');
     if (!active) return;
     if (active.dataset.sideTab === 'issues') fetchIssues();
     else if (active.dataset.sideTab === 'prs') fetchPRs();
-  }, 30000);
+  }, 30000));
   connectSSE();
+}
+
+function stopDashboard() {
+  for (const id of _pollIntervals) clearInterval(id);
+  _pollIntervals = [];
+  if (_sseSource) {
+    _sseShouldReconnect = false;
+    try { _sseSource.close(); } catch (e) {}
+    _sseSource = null;
+  }
 }
 
 // ── Tracked Branch / Git ──────────────────────────────────────
