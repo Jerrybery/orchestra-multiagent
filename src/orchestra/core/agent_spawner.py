@@ -132,6 +132,8 @@ class AgentSpawner:
         model: str = "sonnet",
         on_output: Optional[LineCallback] = None,
         on_session_id: Optional[SessionIdCallback] = None,
+        claude_config_mgr=None,
+        vault=None,
     ):
         self.claude_cmd = claude_cmd
         self.max_turns = max_turns
@@ -140,6 +142,8 @@ class AgentSpawner:
         self.on_session_id = on_session_id
         self._agents: dict[str, AgentHandle] = {}
         self._counter = 0
+        self._config_mgr = claude_config_mgr
+        self._vault = vault
 
     def _next_id(self, role: AgentRole) -> str:
         self._counter += 1
@@ -160,11 +164,14 @@ class AgentSpawner:
         """Spawn a Claude Code subprocess with stream-json output."""
         agent_id = self._next_id(role)
 
+        # Resolve active profile (if config manager present)
+        profile = self._config_mgr.active_profile() if self._config_mgr else None
+
+        permission_mode = profile.permission_mode if profile else "bypassPermissions"
         cmd = [self.claude_cmd, "-p", "--verbose",
                "--output-format", "stream-json",
-               "--permission-mode", "bypassPermissions"]
+               "--permission-mode", permission_mode]
 
-        # All long text goes to temp files to avoid ARG_MAX / shell escaping issues
         temp_files = []
 
         if system_prompt:
@@ -175,10 +182,27 @@ class AgentSpawner:
             temp_files.append(sp_file.name)
             cmd.extend(["--system-prompt-file", sp_file.name])
 
-        # Model priority: explicit param > role default > spawner default
-        effective_model = model or ROLE_MODEL.get(role, self.model)
+        # Model priority: explicit param > profile role_models > profile.model > ROLE_MODEL > spawner default
+        if model:
+            effective_model = model
+        elif profile and profile.role_models.get(role.value):
+            effective_model = profile.role_models[role.value]
+        elif profile:
+            effective_model = profile.model
+        else:
+            effective_model = ROLE_MODEL.get(role, self.model)
         if effective_model:
             cmd.extend(["--model", effective_model])
+
+        # MCP servers from profile
+        if profile and profile.mcp_servers:
+            mcp_file = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", prefix="orch-mcp-", delete=False)
+            import json as _mcp_json
+            _mcp_json.dump({"mcpServers": profile.mcp_servers}, mcp_file)
+            mcp_file.close()
+            temp_files.append(mcp_file.name)
+            cmd.extend(["--mcp-config", mcp_file.name])
 
         if add_dirs:
             for d in add_dirs:
@@ -187,8 +211,17 @@ class AgentSpawner:
         if extra_args:
             cmd.extend(extra_args)
 
-        # Task prompt via stdin (not positional arg) — avoids length limits and escaping issues
-        log.info("[%s] Spawning in %s (model=%s): %s", agent_id, cwd, effective_model, task_prompt[:80])
+        # Build subprocess env: inherit os.environ, overlay profile env (resolve vault refs)
+        import os as _os
+        proc_env = dict(_os.environ)
+        if profile and profile.env:
+            for k, v in profile.env.items():
+                proc_env[k] = self._vault.resolve(v) if self._vault else v
+
+        log.info("[%s] Spawning in %s (model=%s, profile=%s): %s",
+                 agent_id, cwd, effective_model,
+                 profile.name if profile else "none",
+                 task_prompt[:80])
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -196,6 +229,7 @@ class AgentSpawner:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=proc_env,
         )
         # Write task prompt to stdin and close it
         proc.stdin.write(task_prompt.encode())

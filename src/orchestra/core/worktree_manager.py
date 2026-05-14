@@ -392,13 +392,91 @@ class WorktreeManager:
             })
         return commits
 
-    async def get_log_graph(self, max_count: int = 200) -> list[dict]:
-        """Get git log with parent info for DAG rendering. Includes remote branches."""
+    async def list_active_branches(self, limit: int = 50) -> list[dict]:
+        """List branches sorted by last commit time (most recent first).
+
+        Each entry: {name, commit, last_commit_at, is_remote}.
+
+        Uses ``git for-each-ref`` over both ``refs/heads`` and
+        ``refs/remotes``. Remote names are normalized by stripping the
+        leading ``refs/remotes/`` so they appear as e.g. ``origin/X``.
+        HEAD pointers like ``origin/HEAD`` are filtered out — they're
+        symbolic refs to other branches and would create dupes.
+        """
         rc, out, _ = await self._run(
-            "git", "log", "--all", "--remotes", f"--max-count={max_count}",
-            "--format=%H\t%P\t%h\t%s\t%an\t%cr\t%D",
-            "--topo-order",
+            "git", "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname)\t%(objectname:short)\t%(committerdate:iso-strict)",
+            "refs/heads", "refs/remotes",
         )
+        if rc != 0 or not out:
+            return []
+
+        seen: set[str] = set()
+        branches: list[dict] = []
+        for line in out.splitlines():
+            parts = line.split("\t", 2)
+            if len(parts) < 2:
+                continue
+            refname = parts[0].strip()
+            commit = parts[1].strip()
+            last_commit_at = parts[2].strip() if len(parts) > 2 else ""
+
+            if refname.startswith("refs/heads/"):
+                name = refname[len("refs/heads/"):]
+                is_remote = False
+            elif refname.startswith("refs/remotes/"):
+                name = refname[len("refs/remotes/"):]
+                # Skip remote HEAD pointers like origin/HEAD
+                if name.endswith("/HEAD") or name == "HEAD":
+                    continue
+                is_remote = True
+            else:
+                continue
+
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            branches.append({
+                "name": name,
+                "commit": commit,
+                "last_commit_at": last_commit_at,
+                "is_remote": is_remote,
+            })
+            if limit and len(branches) >= limit:
+                break
+
+        return branches
+
+    async def get_log_graph(self, max_count: int = 200,
+                            branches: Optional[list[str]] = None) -> list[dict]:
+        """Get git log with parent info for DAG rendering.
+
+        If ``branches`` is provided, pass each branch as an explicit ref to
+        ``git log`` (instead of ``--all --remotes``). This is what makes the
+        graph readable in repos with hundreds of refs — without it, 700+
+        branches collapse the ``max_count`` window so the actively-tracked
+        branches drop off the bottom.
+
+        Remote refs need their ``origin/`` prefix included to be resolved
+        — they're just passed through verbatim.
+        """
+        if branches:
+            ref_args = [b for b in branches if b and b.strip()]
+            if not ref_args:
+                return []
+            cmd = [
+                "git", "log", *ref_args, f"--max-count={max_count}",
+                "--format=%H\t%P\t%h\t%s\t%an\t%cr\t%D",
+                "--topo-order",
+            ]
+        else:
+            cmd = [
+                "git", "log", "--all", "--remotes", f"--max-count={max_count}",
+                "--format=%H\t%P\t%h\t%s\t%an\t%cr\t%D",
+                "--topo-order",
+            ]
+        rc, out, _ = await self._run(*cmd)
         if rc != 0 or not out:
             return []
 

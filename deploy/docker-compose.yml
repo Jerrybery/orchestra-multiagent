@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: orchestra
+      POSTGRES_USER: orchestra
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orchestra"]
+      interval: 5s
+      retries: 5
+
+  orchestra:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${ORCHESTRA_PORT:-8420}:8420"
+    environment:
+      ORCHESTRA_DATABASE_URL: postgresql+asyncpg://orchestra:${POSTGRES_PASSWORD}@postgres:5432/orchestra
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
