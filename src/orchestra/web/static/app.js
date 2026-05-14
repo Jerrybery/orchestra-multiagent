@@ -112,11 +112,13 @@ function renderBranchPicker() {
   for (const name of visible) {
     const chip = document.createElement('span');
     chip.className = 'branch-chip';
+    chip.title = name;  // full name on hover
     const dot = document.createElement('span');
     dot.className = 'branch-chip-dot';
     chip.appendChild(dot);
     const text = document.createElement('span');
-    text.textContent = name;
+    text.className = 'branch-chip-text';
+    text.textContent = shortenBranchName(name);
     chip.appendChild(text);
 
     const close = document.createElement('span');
@@ -300,6 +302,22 @@ const FEAT_R = 7;
 const TRUNK_X_OFFSET = 50;   // trunk line offset from idea right edge
 
 // ── Build Layout ────────────────────────────────────────────────
+
+// Short display name for chips: strip origin/ prefix; if still long,
+// collapse path segments to last-component (`feat/foo/bar` → `…/bar`).
+// The full name is preserved in `title` attribute for hover.
+function shortenBranchName(name) {
+  let s = name;
+  if (s.startsWith('remotes/origin/')) s = s.slice(15);
+  else if (s.startsWith('origin/')) s = s.slice(7);
+  else if (s.startsWith('remotes/')) s = s.slice(8);
+  if (s.length > 22 && s.includes('/')) {
+    const parts = s.split('/');
+    s = '…/' + parts[parts.length - 1];
+  }
+  if (s.length > 22) s = s.slice(0, 21) + '…';
+  return s;
+}
 
 // Canonicalize a branch ref name: strip remotes/origin/ or origin/ prefix
 // so 'origin/prod' and local 'prod' end up on the same lane.

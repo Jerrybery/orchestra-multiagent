@@ -508,15 +508,24 @@ main {
 /* ── Branch picker (chips above graph) ────────────────────────── */
 .branch-picker {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
-  padding: 8px 12px;
+  padding: 6px 12px;
   align-items: center;
   border-bottom: 1px solid var(--border);
   background: var(--bg-panel);
   font-size: 12px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  white-space: nowrap;
 }
+.branch-picker::-webkit-scrollbar { height: 6px; }
+.branch-picker::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
 .branch-picker:empty { display: none; }
+/* "static" elements (label, add, reset) shouldn't shrink */
+.branch-picker > .branch-picker-label,
+.branch-picker > .branch-add-btn,
+.branch-picker > .branch-reset-btn { flex-shrink: 0; }
 .branch-picker-label {
   color: var(--text-mute);
   font-size: 11px;
@@ -539,6 +548,14 @@ main {
   font-size: 12px;
   color: var(--text);
   font-family: var(--font-mono, monospace);
+  max-width: 200px;
+  flex-shrink: 0;
+}
+.branch-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
 }
 .branch-chip-dot {
   width: 8px;
