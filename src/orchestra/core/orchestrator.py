@@ -180,6 +180,14 @@ class Orchestrator:
             head_fn=_git_rev_parse_head,
             files_changed_fn=self._git_files_changed,
         )
+        from orchestra.core.runners.pl import PLRunner
+        pl_runner = PLRunner(
+            self.spawner,
+            task_loader=self.task_queue.get_task,
+            prompt_loader=lambda tid: self._load_prompt(
+                AgentRole.PLANNER, tid),
+        )
+
         from orchestra.core.dev_server import DevServer
         fi_runner = FIRunner(
             self.spawner,
@@ -199,7 +207,7 @@ class Orchestrator:
         )
         self.manager = AgentRunManager(
             task_queue=self.task_queue,
-            runners={"hl": hl_runner, "fr": fr_runner, "fi": fi_runner},
+            runners={"hl": hl_runner, "fr": fr_runner, "fi": fi_runner, "pl": pl_runner},
             context={"project_dir": config.project_dir,
                      "orchestra_dir": config.orchestra_dir},
             log_path_fn=lambda role, tid: str(
