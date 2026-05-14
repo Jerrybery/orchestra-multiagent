@@ -25,6 +25,7 @@ class AgentRole(str, Enum):
     FEATURE_REALIZER = "feature_realizer"
     FEATURE_INTERPRETER = "feature_interpreter"
     DISCUSSION_ANALYST = "discussion_analyst"
+    PLANNER = "planner"
 
 
 # Default model per role — top-level agents use opus, workers use sonnet
