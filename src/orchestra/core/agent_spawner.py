@@ -24,14 +24,12 @@ class AgentRole(str, Enum):
     HEAD_LEADER = "head_leader"
     FEATURE_REALIZER = "feature_realizer"
     FEATURE_INTERPRETER = "feature_interpreter"
-    DISCUSSION_ANALYST = "discussion_analyst"
     PLANNER = "planner"
 
 
 # Default model per role — top-level agents use opus, workers use sonnet
 ROLE_MODEL: dict[str, str] = {
     AgentRole.HEAD_LEADER: "opus",
-    AgentRole.DISCUSSION_ANALYST: "opus",
     AgentRole.FEATURE_REALIZER: "sonnet",
     AgentRole.FEATURE_INTERPRETER: "sonnet",
 }
