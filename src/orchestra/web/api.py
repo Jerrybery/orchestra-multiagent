@@ -446,7 +446,8 @@ def _smart_default_branches(active: list[dict], limit: int = 15) -> list[str]:
 
 
 @app.get("/api/graph")
-async def get_graph(branches: Optional[str] = None):
+async def get_graph(branches: Optional[str] = None,
+                    show_abandoned: bool = False):
     """Return the full DAG: requirements → tasks with deps and status.
 
     Optional ``branches`` query param: comma-separated branch names to
@@ -456,6 +457,27 @@ async def get_graph(branches: Optional[str] = None):
     orch = _orch()
     tasks = await orch.task_queue.get_tasks()
     reqs = await orch.task_queue.get_all_requirements()
+
+    # Filter abandoned items (unless explicitly requested).
+    # - "Active" proposal: status in {pending, approved, paused}.
+    #   Anything else (rejected primarily) means the user/system gave up.
+    # - A requirement is hidden when it has no active proposal AND no
+    #   surviving (non-FAILED) task — there's literally nothing to do
+    #   under it.
+    # - Tasks in terminal FAILED state are also dropped from the node
+    #   list so the graph doesn't accumulate dead branches.
+    if not show_abandoned:
+        all_props = await orch.task_queue.get_proposals(status=None)
+        active_req_ids = {
+            p.requirement_id for p in all_props
+            if p.status in ("pending", "approved", "paused")
+        }
+        active_req_ids |= {
+            t.requirement_id for t in tasks
+            if t.requirement_id and t.status != TaskStatus.FAILED
+        }
+        reqs = [r for r in reqs if r.id in active_req_ids]
+        tasks = [t for t in tasks if t.status != TaskStatus.FAILED]
 
     # Build nodes
     nodes = []
