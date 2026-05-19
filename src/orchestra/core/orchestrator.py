@@ -25,21 +25,6 @@ log = logging.getLogger(__name__)
 RESULT_PATTERN = re.compile(r"ORCHESTRA_RESULT:({.*})")
 
 
-def _prompts_dir() -> Path:
-    """Resolve the prompts/ directory at the repo root.
-
-    Prompts live at the top of the repo for auditability — easier to spot
-    in `git log -- prompts/` than buried under src/. In a develop install
-    (`pip install -e .`), parents[3] resolves to the repo root.
-    """
-    candidate = Path(__file__).resolve().parents[3] / "prompts"
-    if not candidate.is_dir():
-        raise FileNotFoundError(
-            f"prompts/ not found at expected location: {candidate}"
-        )
-    return candidate
-
-
 def _parse_agent_result(output: str) -> Optional[dict]:
     """Extract ORCHESTRA_RESULT JSON from agent stdout."""
     for line in reversed(output.splitlines()):
@@ -140,82 +125,29 @@ class Orchestrator:
 
     def __init__(self, config: OrchestraConfig):
         self.config = config
-        from .db.engine import create_db_engine
-        self._engine, self._session_factory = create_db_engine(
-            database_config=config.database_config,
-            orchestra_dir=config.orchestra_dir,
-        )
-        self.task_queue = TaskQueue(self._session_factory)
-        self.context = ContextManager(config.orchestra_dir)
-        self.worktree = WorktreeManager(config.project_dir, config.orchestra_dir / "worktrees")
-        self.github = GitHubManager(config.project_dir)
-        self.spawner = AgentSpawner(
-            claude_cmd=config.claude_cmd,
-            max_turns=config.max_turns,
-            model=config.model,
+        from .bootstrap import build_core
+        from .agent_run_manager import AutoDriver
+
+        core = build_core(
+            config,
+            emit=self._emit,
             on_output=self._on_agent_output,
-            claude_config_mgr=config.claude_config_mgr,
-            vault=config.vault,
+            hl_done_hook=self._on_hl_done,
+            fr_failed_hook=self._on_fr_failed_cascade,
         )
+        self._engine = core.engine
+        self._session_factory = core.session_factory
+        self.task_queue = core.task_queue
+        self.context = core.context
+        self.worktree = core.worktree
+        self.github = core.github
+        self.spawner = core.spawner
+        self.manager = core.manager
+        self._prompt_loader = core.prompt_loader
         self._on_event: Optional[Callable[[str, dict], Awaitable[None]]] = None
         self.tracker: Optional[IssueTracker] = None
         self._tracker_task: Optional[asyncio.Task] = None
 
-        # NEW (Task 3.3): wire up runners + manager + auto driver
-        from orchestra.core.runners.hl import HLRunner
-        from orchestra.core.runners.fr import FRRunner
-        from orchestra.core.runners.fi import FIRunner
-        from orchestra.core.agent_run_manager import AgentRunManager, AutoDriver
-
-        hl_runner = HLRunner(
-            self.spawner,
-            requirement_loader=self._load_requirement_text,
-            prompt_loader=lambda: self._load_prompt(AgentRole.HEAD_LEADER),
-        )
-        fr_runner = FRRunner(
-            self.spawner, self.worktree,
-            task_loader=self.task_queue.get_task,
-            prompt_loader=lambda tid: self._load_prompt(
-                AgentRole.FEATURE_REALIZER, tid),
-            head_fn=_git_rev_parse_head,
-            files_changed_fn=self._git_files_changed,
-        )
-        from orchestra.core.runners.pl import PLRunner
-        pl_runner = PLRunner(
-            self.spawner,
-            task_loader=self.task_queue.get_task,
-            prompt_loader=lambda tid: self._load_prompt(
-                AgentRole.PLANNER, tid),
-        )
-
-        from orchestra.core.dev_server import DevServer
-        fi_runner = FIRunner(
-            self.spawner,
-            task_loader=self.task_queue.get_task,
-            prompt_loader=lambda tid: self._load_prompt(
-                AgentRole.FEATURE_INTERPRETER, tid),
-            run_config_loader=self.context.get_run_config,
-            dev_server_factory=DevServer,
-            # Late-binding lambdas so tests can monkeypatch
-            # `orch.context.get_worktree_path` after construction.
-            worktree_path_fn=lambda tid: self.context.get_worktree_path(tid),
-            dev_log_path_fn=lambda tid: self.context.get_dev_server_log_path(tid),
-            head_fn=_git_rev_parse_head,
-            status_fn=_git_status_porcelain,
-            reset_fn=_git_reset_to,
-            report_parser=self._parse_findings_from_report,
-        )
-        self.manager = AgentRunManager(
-            task_queue=self.task_queue,
-            runners={"hl": hl_runner, "fr": fr_runner, "fi": fi_runner, "pl": pl_runner},
-            context={"project_dir": config.project_dir,
-                     "orchestra_dir": config.orchestra_dir},
-            log_path_fn=lambda role, tid: str(
-                self.context.get_log_path(f"{role}-{tid}")),
-            emit=self._emit,
-            hl_done_hook=self._on_hl_done,
-            fr_failed_hook=self._on_fr_failed_cascade,
-        )
         self.auto_driver = AutoDriver(
             task_queue=self.task_queue, manager=self.manager, config=config,
         )
@@ -306,22 +238,6 @@ class Orchestrator:
         await self.task_queue.add_event(event, data)
         if self._on_event:
             await self._on_event(event, data)
-
-    # ── Helpers used by Runners/Manager/AutoDriver (Task 3.3) ───────
-
-    async def _load_requirement_text(self, req_id: str) -> str:
-        req = await self.task_queue.get_requirement(req_id)
-        return req.content if req else ""
-
-    async def _git_files_changed(self, cwd, base_branch) -> list:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "diff", "--name-only", f"{base_branch}..HEAD",
-            cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        out, _ = await proc.communicate()
-        return [l for l in out.decode().splitlines() if l]
 
     async def _on_hl_done(self, requirement_id: str, snapshot: dict) -> None:
         """Hook called when an HL run succeeds (auto OR manual) — mint a proposal."""
@@ -588,48 +504,7 @@ class Orchestrator:
     # ── Prompt Loading ──────────────────────────────────────────────
 
     def _load_prompt(self, role: AgentRole, task_id: Optional[str] = None) -> str:
-        """Load prompt template and inject both paths and file contents."""
-        prompt_file = _prompts_dir() / f"{role.value}.md"
-        template = prompt_file.read_text()
-
-        if task_id:
-            env = self.context.get_agent_env(task_id, role.value)
-        else:
-            env = self.context.get_agent_env("__global__", role.value)
-
-        # Replace {key} path placeholders
-        for key, value in env.items():
-            template = template.replace(f"{{{key}}}", value)
-
-        # Inject file contents directly so agents don't waste tool calls reading them
-        def _read_safe(path: str) -> str:
-            try:
-                p = Path(path)
-                return p.read_text() if p.exists() else "(not yet created)"
-            except Exception:
-                return "(unreadable)"
-
-        # Architecture and conventions — always available
-        arch_content = _read_safe(env.get("architecture", ""))
-        conv_content = _read_safe(env.get("conventions", ""))
-        template = template.replace("{architecture_content}", arch_content)
-        template = template.replace("{conventions_content}", conv_content)
-
-        # Spec content — for FR and FI
-        if "spec_file" in env:
-            spec = self.context.read_spec(task_id) if task_id else None
-            template = template.replace("{spec_content}", spec or "(no spec found)")
-
-        # API contracts — read all files in the directory
-        contracts = []
-        if self.context.contracts_dir.is_dir():
-            for f in sorted(self.context.contracts_dir.iterdir()):
-                if f.is_file():
-                    contracts.append(f"### {f.name}\n{f.read_text()}")
-        template = template.replace("{contracts_content}",
-                                    "\n\n".join(contracts) if contracts else "(no contracts defined yet)")
-
-        return template
+        return self._prompt_loader(role.value, task_id)
 
     # ── Head Leader ─────────────────────────────────────────────────
 

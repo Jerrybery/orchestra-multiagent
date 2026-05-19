@@ -1,8 +1,9 @@
 import subprocess
 from pathlib import Path
 import pytest
+import pytest_asyncio
 
-from orchestra.core.orchestrator import OrchestraConfig
+from orchestra.core.orchestrator import OrchestraConfig, Orchestrator
 from orchestra.core.bootstrap import CoreServices, build_core
 
 
@@ -42,3 +43,26 @@ def test_build_core_prompt_loader_works(config):
     core.context.init()
     prompt = core.prompt_loader("head_leader")
     assert len(prompt) > 0
+
+
+@pytest_asyncio.fixture
+async def orchestrator_via_bootstrap(config):
+    orch = Orchestrator(config)
+    await orch.init()
+    yield orch
+    await orch.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_still_works_after_refactor(orchestrator_via_bootstrap):
+    orch = orchestrator_via_bootstrap
+    req = await orch.task_queue.add_requirement("r1", "test content")
+    assert req.id == "r1"
+    fetched = await orch.task_queue.get_requirement("r1")
+    assert fetched.content == "test content"
+    assert orch.task_queue is not None
+    assert orch.context is not None
+    assert orch.worktree is not None
+    assert orch.spawner is not None
+    assert orch.manager is not None
+    assert orch.auto_driver is not None
