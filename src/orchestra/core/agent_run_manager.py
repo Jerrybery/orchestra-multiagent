@@ -177,7 +177,7 @@ class AgentRunManager:
             if self._hl_done_hook and snap.get("features"):
                 await self._hl_done_hook(ctx.target_id, snap)
             # State machine: only auto-mode flips requirement.status
-            if ctx.mode == "auto":
+            if ctx.mode in ("auto", "standalone"):
                 await self.task_queue.update_requirement_status(
                     ctx.target_id, "processed",
                 )
@@ -190,13 +190,13 @@ class AgentRunManager:
                 current_spec = task.spec if task else ""
                 combined = (current_spec or "") + "\n\n---\n\n" + plan_text
                 await self.task_queue.update_task_spec(ctx.target_id, combined)
-            if ctx.mode == "auto":
+            if ctx.mode in ("auto", "standalone"):
                 await self.task_queue.transition(
                     ctx.target_id, TaskStatus.PLANNED,
                 )
             return
 
-        if ctx.mode != "auto":
+        if ctx.mode not in ("auto", "standalone"):
             return  # FR/FI manual: don't touch state machine
 
         if ctx.role == "fr":
