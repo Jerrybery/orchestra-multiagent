@@ -213,6 +213,25 @@ class WorktreeManager:
         log.info("Created worktree %s on branch %s", wt_path, branch)
         return wt_path
 
+    async def ensure_worktree_from_branch(self, task_id: str, branch: str) -> Path:
+        """Ensure worktree exists, checking out an existing branch.
+
+        Unlike create_worktree which creates a new branch from main,
+        this checks out an already-existing branch into a worktree.
+        """
+        wt_path = self.worktrees_dir / task_id
+        if wt_path.exists():
+            self._branch_cache[task_id] = branch
+            return wt_path
+        rc, _, err = await self._run(
+            "git", "worktree", "add", str(wt_path), branch,
+        )
+        if rc != 0:
+            raise RuntimeError(f"Failed to create worktree from {branch}: {err}")
+        self._branch_cache[task_id] = branch
+        log.info("Created worktree %s from existing branch %s", wt_path, branch)
+        return wt_path
+
     async def _has_remote(self) -> bool:
         rc, _, _ = await self._run("git", "remote", "get-url", "origin")
         return rc == 0
