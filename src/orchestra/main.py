@@ -243,6 +243,71 @@ async def cmd_review(args: argparse.Namespace) -> None:
     await orch.close()
 
 
+async def cmd_run_hl(args: argparse.Namespace) -> None:
+    """Run Head Leader standalone on a requirement file."""
+    from .core.standalone import StandaloneSession
+
+    project_dir = Path(args.project).resolve()
+    config_path = Path(args.config) if args.config else project_dir / "orchestra.yaml"
+    config = load_config(config_path, project_dir)
+
+    session = StandaloneSession(config, quiet=args.quiet)
+    await session.init()
+    try:
+        input_path = Path(args.input) if args.input != "-" else Path("-")
+        result = await session.run_hl(input_path)
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(0 if result["status"] == "succeeded" else 1)
+    finally:
+        await session.close()
+
+
+async def cmd_run_fr(args: argparse.Namespace) -> None:
+    """Run Feature Realizer standalone on a spec file."""
+    from .core.standalone import StandaloneSession
+
+    project_dir = Path(args.project).resolve()
+    config_path = Path(args.config) if args.config else project_dir / "orchestra.yaml"
+    config = load_config(config_path, project_dir)
+
+    session = StandaloneSession(config, quiet=args.quiet)
+    await session.init()
+    try:
+        result = await session.run_fr(
+            Path(args.spec),
+            task_id=args.task_id,
+        )
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(0 if result["status"] == "succeeded" else 1)
+    finally:
+        await session.close()
+
+
+async def cmd_run_fi(args: argparse.Namespace) -> None:
+    """Run Feature Interpreter standalone on a branch or PR."""
+    from .core.standalone import StandaloneSession
+
+    project_dir = Path(args.project).resolve()
+    config_path = Path(args.config) if args.config else project_dir / "orchestra.yaml"
+    config = load_config(config_path, project_dir)
+
+    session = StandaloneSession(config, quiet=args.quiet)
+    await session.init()
+    try:
+        result = await session.run_fi(
+            branch=args.branch,
+            pr_number=args.pr,
+            task_id=args.task_id,
+            dev_cmd=getattr(args, "dev_cmd", None),
+            dev_ready=getattr(args, "dev_ready", None),
+            base_url=getattr(args, "base_url", None),
+        )
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(0 if result["status"] == "succeeded" else 1)
+    finally:
+        await session.close()
+
+
 async def cmd_watch(args: argparse.Namespace) -> None:
     """Watch GitHub issues and participate in discussions."""
     project_dir = Path(args.project).resolve()
@@ -358,6 +423,30 @@ def main() -> None:
     p_review = sub.add_parser("review", help="Review tasks awaiting approval")
     p_review.add_argument("task_id", nargs="?", help="Specific task to review")
 
+    # run-hl
+    p_run_hl = sub.add_parser("run-hl", help="Run Head Leader standalone")
+    p_run_hl.add_argument("--input", required=True,
+                          help="Requirement/roadmap file (- for stdin)")
+    p_run_hl.add_argument("--quiet", "-q", action="store_true",
+                          help="Suppress agent real-time output")
+
+    # run-fr
+    p_run_fr = sub.add_parser("run-fr", help="Run Feature Realizer standalone")
+    p_run_fr.add_argument("--spec", required=True, help="Spec file path")
+    p_run_fr.add_argument("--task-id", help="Task ID (default: derived from filename)")
+    p_run_fr.add_argument("--quiet", "-q", action="store_true")
+
+    # run-fi
+    p_run_fi = sub.add_parser("run-fi", help="Run Feature Interpreter standalone")
+    p_run_fi_input = p_run_fi.add_mutually_exclusive_group(required=True)
+    p_run_fi_input.add_argument("--branch", help="Branch to review")
+    p_run_fi_input.add_argument("--pr", type=int, help="PR number to review")
+    p_run_fi.add_argument("--task-id", help="Task ID (default: derived from branch)")
+    p_run_fi.add_argument("--dev-cmd", help="Dev server command")
+    p_run_fi.add_argument("--dev-ready", help="Dev server ready signal")
+    p_run_fi.add_argument("--base-url", help="Dev server base URL")
+    p_run_fi.add_argument("--quiet", "-q", action="store_true")
+
     args = parser.parse_args()
 
     cmd_map = {
@@ -368,6 +457,9 @@ def main() -> None:
         "web": cmd_web,
         "status": cmd_status,
         "review": cmd_review,
+        "run-hl": cmd_run_hl,
+        "run-fr": cmd_run_fr,
+        "run-fi": cmd_run_fi,
     }
 
     asyncio.run(cmd_map[args.command](args))
