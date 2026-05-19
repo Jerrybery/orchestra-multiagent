@@ -70,23 +70,24 @@ class FIRunner(AgentRunner):
         wt_path = self._wt_path(task.id)
 
         run_cfg = await self._load_run_config()
-        if not run_cfg:
-            return RunResult(status="failed", session_id=None,
-                             result_snapshot={},
-                             error_message="RunConfig missing — re-run setup wizard")
 
         dev_log = self._dev_log_path(task.id)
-        server = self._dev_server(
-            cwd=wt_path, command=run_cfg.command,
-            ready_signal=run_cfg.ready_signal, base_url=run_cfg.base_url,
-            timeout=run_cfg.startup_timeout, log_path=dev_log,
-        )
-        try:
-            await server.start()
-        except Exception as e:
-            return RunResult(status="failed", session_id=None,
-                             result_snapshot={},
-                             error_message=f"dev server failed to start: {e}")
+        server = None
+        if run_cfg:
+            server = self._dev_server(
+                cwd=wt_path, command=run_cfg.command,
+                ready_signal=run_cfg.ready_signal, base_url=run_cfg.base_url,
+                timeout=run_cfg.startup_timeout, log_path=dev_log,
+            )
+            try:
+                await server.start()
+            except Exception as e:
+                return RunResult(status="failed", session_id=None,
+                                 result_snapshot={},
+                                 error_message=f"dev server failed to start: {e}")
+
+        base_url = run_cfg.base_url if run_cfg else "(no dev server)"
+        dev_log_str = str(dev_log) if run_cfg else "(no dev server)"
 
         baseline_head = await self._git_head(wt_path)
         baseline_status = await self._git_status(wt_path)
@@ -95,8 +96,8 @@ class FIRunner(AgentRunner):
 
         try:
             system_prompt = self._load_prompt(task.id)
-            system_prompt = system_prompt.replace("{base_url}", run_cfg.base_url)
-            system_prompt = system_prompt.replace("{dev_server_log_path}", str(dev_log))
+            system_prompt = system_prompt.replace("{base_url}", base_url)
+            system_prompt = system_prompt.replace("{dev_server_log_path}", dev_log_str)
             system_prompt = system_prompt.replace(
                 "{chat_context_block}", render_chat_context_block(ctx)
             )
@@ -119,9 +120,11 @@ class FIRunner(AgentRunner):
 
             task_prompt = ctx.user_message or (
                 f"Verify the implementation of feature {task.id}: {task.title}\n\n"
-                f"The dev server is running at {run_cfg.base_url}.\n"
-                f"Dev server log: {dev_log}\n\n"
-                f"Run `git diff --stat main..HEAD` and `git diff main..HEAD` to see the changes.\n"
+                + (f"The dev server is running at {base_url}.\n"
+                   f"Dev server log: {dev_log_str}\n\n"
+                   if run_cfg else
+                   "No dev server is available. Focus on static code review and running tests.\n\n")
+                + f"Run `git diff --stat main..HEAD` and `git diff main..HEAD` to see the changes.\n"
                 f"Then follow Step 3a/3b/3c in the system prompt above.\n"
                 f"{findings_block}"
             )
@@ -145,7 +148,8 @@ class FIRunner(AgentRunner):
             current_head = await self._git_head(wt_path)
             current_status = await self._git_status(wt_path)
         finally:
-            await server.stop()
+            if server:
+                await server.stop()
 
         violated = (current_head != baseline_head) or (
             _filter_dev_artifacts(current_status)
