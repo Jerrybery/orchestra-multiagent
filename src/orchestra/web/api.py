@@ -1389,8 +1389,8 @@ class StandaloneFIRequest(BaseModel):
 
 
 def _standalone_make_id(prefix: str) -> str:
-    import hashlib
-    unique = f"{prefix}:{time.time()}"
+    import hashlib, os
+    unique = f"{prefix}:{time.time()}:{os.urandom(8).hex()}"
     return f"{prefix}-{hashlib.sha256(unique.encode()).hexdigest()[:8]}"
 
 
@@ -1421,9 +1421,11 @@ async def standalone_fr(req: StandaloneFRRequest):
     task_id = req.task_id
     if not task_id:
         task_id = _standalone_derive_task_id(spec_text)
-        existing = await orch.task_queue.get_task(task_id)
-        if existing:
-            task_id = f"{task_id}-{_standalone_make_id('t')[-6:]}"
+    existing = await orch.task_queue.get_task(task_id)
+    if existing:
+        if req.task_id:
+            raise HTTPException(409, f"Task '{task_id}' already exists")
+        task_id = f"{task_id}-{_standalone_make_id('t')[-6:]}"
 
     # Extract title from spec
     title = task_id
@@ -1443,8 +1445,11 @@ async def standalone_fr(req: StandaloneFRRequest):
     orch.context.write_spec(task_id, spec_text)
 
     # Fast-forward state: IDEA → PLANNING → PLANNED → ASSIGNED
-    for status in [TaskStatus.PLANNING, TaskStatus.PLANNED, TaskStatus.ASSIGNED]:
-        await orch.task_queue.transition(task_id, status)
+    try:
+        for status in [TaskStatus.PLANNING, TaskStatus.PLANNED, TaskStatus.ASSIGNED]:
+            await orch.task_queue.transition(task_id, status)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
     # Submit FR run
     run_id = await orch.manager.submit(
@@ -1470,9 +1475,9 @@ async def standalone_fi(req: StandaloneFIRequest):
         )
         out, err = await proc.communicate()
         if proc.returncode != 0:
-            raise HTTPException(400, f"Failed to resolve PR #{req.pr}: {err.decode()}")
+            raise HTTPException(400, f"Failed to resolve PR #{req.pr}")
         branch = out.decode().strip()
-        await orch.worktree._run("git", "fetch", "origin", branch)
+        await orch.worktree.fetch_remote()
 
     if not branch:
         raise HTTPException(400, "Either branch or pr must be provided")
@@ -1490,15 +1495,21 @@ async def standalone_fi(req: StandaloneFIRequest):
         await orch.task_queue.add_task(
             task_id, title=f"Review {branch}", requirement_id=req_id,
         )
-        for status in [
-            TaskStatus.PLANNING, TaskStatus.PLANNED,
-            TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS,
-            TaskStatus.IMPLEMENTED,
-        ]:
-            await orch.task_queue.transition(task_id, status)
+        try:
+            for status in [
+                TaskStatus.PLANNING, TaskStatus.PLANNED,
+                TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS,
+                TaskStatus.IMPLEMENTED,
+            ]:
+                await orch.task_queue.transition(task_id, status)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     # Ensure worktree exists
-    await orch.worktree.ensure_worktree_from_branch(task_id, branch)
+    try:
+        await orch.worktree.ensure_worktree_from_branch(task_id, branch)
+    except RuntimeError as e:
+        raise HTTPException(400, f"Branch not found or worktree creation failed: {e}")
 
     # Submit FI run
     run_id = await orch.manager.submit(
