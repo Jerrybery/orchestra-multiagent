@@ -1375,6 +1375,139 @@ async def delete_vault_secret(name: str):
     v.delete(name)
 
 
+# ── Standalone Endpoints ───────────────────────────────────────────
+
+class StandaloneFRRequest(BaseModel):
+    spec: str
+    task_id: Optional[str] = None
+
+
+class StandaloneFIRequest(BaseModel):
+    branch: Optional[str] = None
+    pr: Optional[int] = None
+    task_id: Optional[str] = None
+
+
+def _standalone_make_id(prefix: str) -> str:
+    import hashlib
+    unique = f"{prefix}:{time.time()}"
+    return f"{prefix}-{hashlib.sha256(unique.encode()).hexdigest()[:8]}"
+
+
+def _standalone_derive_task_id(spec_text: str, fallback: str = "task") -> str:
+    """Derive task_id from spec title (first # heading) or fallback."""
+    import re
+    import hashlib
+    for line in spec_text.splitlines():
+        line = line.strip()
+        if line.startswith("# "):
+            slug = re.sub(r'[^a-z0-9]+', '-', line[2:].strip().lower()).strip('-')[:40]
+            if slug:
+                return slug
+    return f"{fallback}-{hashlib.sha256(str(time.time()).encode()).hexdigest()[:6]}"
+
+
+def _standalone_derive_task_id_from_branch(branch: str) -> str:
+    for prefix in ("feat/", "bugfix/", "feature/", "fix/"):
+        if branch.startswith(prefix):
+            return branch[len(prefix):]
+    return branch
+
+
+@app.post("/api/standalone/fr")
+async def standalone_fr(req: StandaloneFRRequest):
+    orch = _orch()
+    spec_text = req.spec
+    task_id = req.task_id
+    if not task_id:
+        task_id = _standalone_derive_task_id(spec_text)
+        existing = await orch.task_queue.get_task(task_id)
+        if existing:
+            task_id = f"{task_id}-{_standalone_make_id('t')[-6:]}"
+
+    # Extract title from spec
+    title = task_id
+    for line in spec_text.splitlines():
+        if line.strip().startswith("# "):
+            title = line.strip()[2:].strip()[:80]
+            break
+
+    # Create placeholder requirement
+    req_id = _standalone_make_id("req")
+    await orch.task_queue.add_requirement(req_id, f"[standalone] {title}")
+    await orch.task_queue.update_requirement_status(req_id, "processed")
+
+    # Create task and write spec
+    await orch.task_queue.add_task(task_id, title=title, requirement_id=req_id)
+    await orch.task_queue.update_task_spec(task_id, spec_text)
+    orch.context.write_spec(task_id, spec_text)
+
+    # Fast-forward state: IDEA → PLANNING → PLANNED → ASSIGNED
+    for status in [TaskStatus.PLANNING, TaskStatus.PLANNED, TaskStatus.ASSIGNED]:
+        await orch.task_queue.transition(task_id, status)
+
+    # Submit FR run
+    run_id = await orch.manager.submit(
+        role="fr", target_kind="task",
+        target_id=task_id, mode="standalone",
+    )
+    return {"run_id": run_id, "task_id": task_id, "status": "running"}
+
+
+@app.post("/api/standalone/fi")
+async def standalone_fi(req: StandaloneFIRequest):
+    orch = _orch()
+    branch = req.branch
+
+    # Resolve PR to branch if needed
+    if req.pr and not branch:
+        proc = await asyncio.create_subprocess_exec(
+            "gh", "pr", "view", str(req.pr),
+            "--json", "headRefName", "-q", ".headRefName",
+            cwd=str(orch.config.project_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await proc.communicate()
+        if proc.returncode != 0:
+            raise HTTPException(400, f"Failed to resolve PR #{req.pr}: {err.decode()}")
+        branch = out.decode().strip()
+        await orch.worktree._run("git", "fetch", "origin", branch)
+
+    if not branch:
+        raise HTTPException(400, "Either branch or pr must be provided")
+
+    task_id = req.task_id
+    if not task_id:
+        task_id = _standalone_derive_task_id_from_branch(branch)
+
+    # Find or create task
+    existing = await orch.task_queue.get_task(task_id)
+    if not existing:
+        req_id = _standalone_make_id("req")
+        await orch.task_queue.add_requirement(req_id, f"[standalone] Review {branch}")
+        await orch.task_queue.update_requirement_status(req_id, "processed")
+        await orch.task_queue.add_task(
+            task_id, title=f"Review {branch}", requirement_id=req_id,
+        )
+        for status in [
+            TaskStatus.PLANNING, TaskStatus.PLANNED,
+            TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS,
+            TaskStatus.IMPLEMENTED,
+        ]:
+            await orch.task_queue.transition(task_id, status)
+
+    # Ensure worktree exists
+    await orch.worktree.ensure_worktree_from_branch(task_id, branch)
+
+    # Submit FI run
+    run_id = await orch.manager.submit(
+        role="fi", target_kind="task",
+        target_id=task_id, mode="standalone",
+    )
+    return {"run_id": run_id, "task_id": task_id, "branch": branch, "status": "running"}
+
+
 @app.get("/api/events/stream")
 async def event_stream():
     """SSE endpoint — streams new events to the browser."""
