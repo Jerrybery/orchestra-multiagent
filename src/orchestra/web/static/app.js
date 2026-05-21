@@ -3785,3 +3785,90 @@ async function deleteVaultKey(name) {
   await fetch(`/api/claude-config/vault/${name}`, {method: 'DELETE'});
   fetchVaultKeys();
 }
+
+// ── Standalone modals ──────────────────────────────────────────
+
+document.getElementById('menu-standalone-fr').addEventListener('click', () => {
+  document.getElementById('overflow-menu').classList.add('hidden');
+  document.getElementById('modal-standalone-fr').classList.remove('hidden');
+  document.getElementById('standalone-fr-spec').focus();
+});
+
+document.getElementById('menu-standalone-fi').addEventListener('click', () => {
+  document.getElementById('overflow-menu').classList.add('hidden');
+  document.getElementById('modal-standalone-fi').classList.remove('hidden');
+  document.getElementById('standalone-fi-branch').focus();
+});
+
+document.getElementById('btn-standalone-fr-submit').addEventListener('click', async () => {
+  const spec = document.getElementById('standalone-fr-spec').value.trim();
+  if (!spec) return;
+  const taskId = document.getElementById('standalone-fr-task-id').value.trim() || undefined;
+
+  const btn = document.getElementById('btn-standalone-fr-submit');
+  btn.disabled = true;
+  btn.textContent = 'Starting…';
+
+  try {
+    const resp = await fetch('/api/standalone/fr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ spec, task_id: taskId }),
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      document.getElementById('modal-standalone-fr').classList.add('hidden');
+      document.getElementById('standalone-fr-spec').value = '';
+      document.getElementById('standalone-fr-task-id').value = '';
+      addLogEntry('standalone', `FR started: task=${data.task_id}, run=#${data.run_id}`);
+      fetchGraph();
+    } else {
+      addLogEntry('error', `FR failed: ${data.detail || JSON.stringify(data)}`);
+    }
+  } catch (e) {
+    addLogEntry('error', `FR request failed: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run FR';
+  }
+});
+
+document.getElementById('btn-standalone-fi-submit').addEventListener('click', async () => {
+  const branch = document.getElementById('standalone-fi-branch').value.trim() || undefined;
+  const prStr = document.getElementById('standalone-fi-pr').value.trim();
+  const pr = prStr ? parseInt(prStr, 10) : undefined;
+  const taskId = document.getElementById('standalone-fi-task-id').value.trim() || undefined;
+
+  if (!branch && !pr) {
+    addLogEntry('error', 'Provide either a branch name or PR number');
+    return;
+  }
+
+  const btn = document.getElementById('btn-standalone-fi-submit');
+  btn.disabled = true;
+  btn.textContent = 'Starting…';
+
+  try {
+    const resp = await fetch('/api/standalone/fi', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branch, pr, task_id: taskId }),
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      document.getElementById('modal-standalone-fi').classList.add('hidden');
+      document.getElementById('standalone-fi-branch').value = '';
+      document.getElementById('standalone-fi-pr').value = '';
+      document.getElementById('standalone-fi-task-id').value = '';
+      addLogEntry('standalone', `FI started: task=${data.task_id}, branch=${data.branch}, run=#${data.run_id}`);
+      fetchGraph();
+    } else {
+      addLogEntry('error', `FI failed: ${data.detail || JSON.stringify(data)}`);
+    }
+  } catch (e) {
+    addLogEntry('error', `FI request failed: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run FI';
+  }
+});

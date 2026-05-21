@@ -155,6 +155,17 @@
           </button>
         </div>
         <div class="dropdown-section">
+          <div class="dropdown-label">Standalone</div>
+          <button class="dropdown-item" id="menu-standalone-fr">
+            <span class="dropdown-icon">⚒</span>
+            <span>Run FR (implement)…</span>
+          </button>
+          <button class="dropdown-item" id="menu-standalone-fi">
+            <span class="dropdown-icon">🔍</span>
+            <span>Run FI (review)…</span>
+          </button>
+        </div>
+        <div class="dropdown-section">
           <div class="dropdown-label">Project</div>
           <button class="dropdown-item" id="menu-run-config" title="Edit / test the dev-server command used by FI">
             <span class="dropdown-icon">⚙</span>
@@ -326,6 +337,49 @@
     <div class="modal-actions">
       <button id="btn-cancel" class="btn">Cancel</button>
       <button id="btn-do-submit" class="btn btn-primary">Submit to Head Leader</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-standalone-fr" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Run Feature Realizer</h2>
+      <button class="btn-icon" onclick="document.getElementById('modal-standalone-fr').classList.add('hidden')">&times;</button>
+    </div>
+    <div style="padding:0 20px 4px">
+      <label style="font-size:12.5px;color:var(--text-muted);display:block;margin-bottom:4px">Task ID (optional, derived from spec title if empty)</label>
+      <input type="text" id="standalone-fr-task-id" placeholder="e.g. auth-login" style="width:100%;box-sizing:border-box;background:var(--bg-sunken);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:8px 10px;font-size:13px;font-family:var(--font-mono)">
+    </div>
+    <textarea id="standalone-fr-spec" rows="12" placeholder="Paste your feature spec here…&#10;&#10;Start with a # heading for the feature title.&#10;Include requirements, acceptance criteria, implementation plan if you have one."></textarea>
+    <div class="modal-actions">
+      <button class="btn" onclick="document.getElementById('modal-standalone-fr').classList.add('hidden')">Cancel</button>
+      <button id="btn-standalone-fr-submit" class="btn btn-primary">Run FR</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-standalone-fi" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Run Feature Interpreter</h2>
+      <button class="btn-icon" onclick="document.getElementById('modal-standalone-fi').classList.add('hidden')">&times;</button>
+    </div>
+    <div style="padding:12px 20px 0">
+      <label style="font-size:12.5px;color:var(--text-muted);display:block;margin-bottom:4px">Branch to review</label>
+      <input type="text" id="standalone-fi-branch" placeholder="e.g. feat/user-page" style="width:100%;box-sizing:border-box;background:var(--bg-sunken);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:8px 10px;font-size:13px;font-family:var(--font-mono)">
+    </div>
+    <div style="padding:8px 20px 0">
+      <label style="font-size:12.5px;color:var(--text-muted);display:block;margin-bottom:4px">— or — PR number</label>
+      <input type="number" id="standalone-fi-pr" placeholder="e.g. 42" style="width:120px;background:var(--bg-sunken);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:8px 10px;font-size:13px;font-family:var(--font-mono)">
+    </div>
+    <div style="padding:8px 20px 12px">
+      <label style="font-size:12.5px;color:var(--text-muted);display:block;margin-bottom:4px">Task ID (optional)</label>
+      <input type="text" id="standalone-fi-task-id" placeholder="derived from branch if empty" style="width:100%;box-sizing:border-box;background:var(--bg-sunken);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:8px 10px;font-size:13px;font-family:var(--font-mono)">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="document.getElementById('modal-standalone-fi').classList.add('hidden')">Cancel</button>
+      <button id="btn-standalone-fi-submit" class="btn btn-primary">Run FI</button>
     </div>
   </div>
 </div>
